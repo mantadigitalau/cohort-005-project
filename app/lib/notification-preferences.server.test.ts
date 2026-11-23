@@ -35,7 +35,15 @@ describe("which Notification switches a person sees", () => {
   });
 
   it("shows Refund Request updates once the person has a Purchase", async () => {
-    buyIndividualPurchase(db, base.user.id, base.course.id, 4900, "NL", NOW);
+    await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      4900,
+      "NL",
+      NOW,
+      notifier
+    );
 
     expect(await visibleCategories(base.user.id)).toEqual([
       "refund-request-updates",
@@ -114,7 +122,15 @@ describe("a switch's value", () => {
     await notifier.setPreference(base.user.id, "refund-request-updates", "feed", false);
     expect(await visibleCategories(base.user.id)).toEqual(["discussion-replies"]);
 
-    buyIndividualPurchase(db, base.user.id, base.course.id, 4900, "NL", NOW);
+    await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      4900,
+      "NL",
+      NOW,
+      notifier
+    );
 
     expect(await getPreferenceSwitches(db, notifier, base.user.id)).toEqual([
       { category: "refund-request-updates", enabled: false },
