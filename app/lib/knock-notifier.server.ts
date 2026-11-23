@@ -1,5 +1,7 @@
 import Knock, { NotFoundError, signUserToken } from "@knocklabs/node";
+import { z } from "zod";
 import {
+  CATEGORY_OF,
   DEFAULT_PREFERENCES,
   type NotificationChannel,
   type NotificationKind,
@@ -71,31 +73,48 @@ function toKnockUser(user: NotificationUser) {
   };
 }
 
+/**
+ * Every category, typed, so no key below needs a cast. A function, not a
+ * constant: notifications.server imports this module, so CATEGORY_OF isn't
+ * initialised yet while this module loads.
+ */
+function allCategories(): PreferenceCategory[] {
+  return [...new Set(Object.values(CATEGORY_OF))];
+}
+
+const CHANNELS: NotificationChannel[] = ["feed"];
+
 function toKnockPreferences(preferences: NotificationPreferences) {
   const categories: Record<
     string,
     { channel_types: Record<string, boolean> }
   > = {};
-  for (const [category, channels] of Object.entries(preferences)) {
+  for (const category of allCategories()) {
+    const channels = preferences[category];
+    if (!channels) continue;
     const channelTypes: Record<string, boolean> = {};
-    for (const [channel, enabled] of Object.entries(channels ?? {})) {
-      channelTypes[KNOCK_CHANNEL_TYPES[channel as NotificationChannel]] =
-        enabled;
+    for (const channel of CHANNELS) {
+      const enabled = channels[channel];
+      if (enabled !== undefined) {
+        channelTypes[KNOCK_CHANNEL_TYPES[channel]] = enabled;
+      }
     }
-    categories[KNOCK_CATEGORY_KEYS[category as PreferenceCategory]] = {
+    categories[KNOCK_CATEGORY_KEYS[category]] = {
       channel_types: channelTypes,
     };
   }
   return { categories };
 }
 
-const CATEGORY_OF_KNOCK_KEY = Object.fromEntries(
-  Object.entries(KNOCK_CATEGORY_KEYS).map(([category, key]) => [key, category])
-) as Record<string, PreferenceCategory>;
+function categoryOfKnockKey(key: string): PreferenceCategory | undefined {
+  return allCategories().find(
+    (category) => KNOCK_CATEGORY_KEYS[category] === key
+  );
+}
 
-const CHANNEL_OF_KNOCK_TYPE = Object.fromEntries(
-  Object.entries(KNOCK_CHANNEL_TYPES).map(([channel, type]) => [type, channel])
-) as Record<string, NotificationChannel>;
+const CHANNEL_OF_KNOCK_TYPE = new Map(
+  CHANNELS.map((channel) => [KNOCK_CHANNEL_TYPES[channel], channel])
+);
 
 type KnockPreferenceSet = Awaited<ReturnType<Knock["users"]["getPreferences"]>>;
 type KnockCategorySetting = NonNullable<
@@ -103,21 +122,44 @@ type KnockCategorySetting = NonNullable<
 >[string];
 
 /**
- * Reads Cadence's categories out of a Knock set. A whole-category boolean
- * applies to every channel; keys Cadence doesn't know are ignored.
+ * One category's setting as Knock returns it: a whole-category boolean, or
+ * per-channel-type values. Channel-type values other than plain booleans
+ * (e.g. conditions) are skipped, as Cadence never writes them.
  */
-function fromKnockPreferences(set: KnockPreferenceSet): NotificationPreferences {
+const knockCategorySettingSchema = z.union([
+  z.boolean(),
+  z.object({
+    channel_types: z.record(z.string(), z.unknown()).nullish(),
+  }),
+]);
+
+const knockPreferenceSetSchema = z.object({
+  categories: z.record(z.string(), z.unknown()).nullish(),
+});
+
+/**
+ * Reads Cadence's categories out of a Knock set, parsing what Knock returned
+ * rather than trusting it. A whole-category boolean applies to every channel;
+ * keys Cadence doesn't know, and settings it can't read, are ignored.
+ */
+function fromKnockPreferences(set: unknown): NotificationPreferences {
   const preferences: NotificationPreferences = {};
-  for (const [key, setting] of Object.entries(set.categories ?? {})) {
-    const category = CATEGORY_OF_KNOCK_KEY[key];
-    if (!category) continue;
-    if (typeof setting === "boolean") {
-      preferences[category] = { feed: setting };
+  const parsedSet = knockPreferenceSetSchema.safeParse(set);
+  if (!parsedSet.success) return preferences;
+
+  for (const [key, raw] of Object.entries(parsedSet.data.categories ?? {})) {
+    const category = categoryOfKnockKey(key);
+    const setting = knockCategorySettingSchema.safeParse(raw);
+    if (!category || !setting.success) continue;
+    if (typeof setting.data === "boolean") {
+      preferences[category] = { feed: setting.data };
       continue;
     }
     const channels: Partial<Record<NotificationChannel, boolean>> = {};
-    for (const [type, enabled] of Object.entries(setting.channel_types ?? {})) {
-      const channel = CHANNEL_OF_KNOCK_TYPE[type];
+    for (const [type, enabled] of Object.entries(
+      setting.data.channel_types ?? {}
+    )) {
+      const channel = CHANNEL_OF_KNOCK_TYPE.get(type);
       if (channel && typeof enabled === "boolean") channels[channel] = enabled;
     }
     preferences[category] = channels;
@@ -217,11 +259,16 @@ export function knockNotifier(
     },
     async setPreference(userId, category, channel, enabled) {
       // Knock's setPreferences replaces the whole set, so read the current
-      // one and write it back with only this category × channel changed.
+      // one and write it back with only this category × channel changed. A
+      // person with no set yet starts from Cadence's defaults, so changing
+      // one switch never leaves the others (e.g. Enrollments) unset.
       const id = knockUserId(userId);
       const set = await readSet(id);
       const key = KNOCK_CATEGORY_KEYS[category];
-      const categories = { ...set?.categories };
+      const categories: Record<string, KnockCategorySetting> =
+        Object.keys(set?.categories ?? {}).length > 0
+          ? { ...set?.categories }
+          : toKnockPreferences(DEFAULT_PREFERENCES).categories;
       categories[key] = withChannel(
         categories[key],
         KNOCK_CHANNEL_TYPES[channel],

@@ -2,7 +2,6 @@ import { and, eq, isNull } from "drizzle-orm";
 import { coupons, courses, enrollments, purchases } from "~/db/schema";
 import {
   enrollUser,
-  getNotificationUser,
   isEnrolled,
   notifyNewEnrollment,
 } from "~/lib/enrollment.server";
@@ -11,6 +10,7 @@ import {
   type Notification,
   type NotificationPort,
 } from "~/lib/notifications.server";
+import { loadNotificationUser } from "~/lib/notification-users.server";
 import { getSeatAvailability, type Db } from "~/lib/refunds.server";
 
 // ─── Seat claim ───
@@ -66,11 +66,11 @@ export async function claimSeat(
 ): Promise<ClaimSeatResult> {
   const seat = getSeatByCode(db, code);
   if (!seat) {
-    return { ok: false, error: "Coupon not found" };
+    return { ok: false, error: "Seat not found" };
   }
 
   if (seat.redeemedByUserId !== null) {
-    return { ok: false, error: "Coupon has already been redeemed" };
+    return { ok: false, error: "This Seat has already been claimed" };
   }
 
   const availability = getSeatAvailability(db, seat);
@@ -89,7 +89,7 @@ export async function claimSeat(
     return {
       ok: false,
       error:
-        "This coupon can only be redeemed from the same country as the purchaser",
+        "This Seat can only be claimed from the same country as the purchaser",
     };
   }
 
@@ -143,8 +143,8 @@ function seatClaimedNotification(
 
   return {
     kind: "seat-claimed",
-    recipients: [getNotificationUser(db, purchase.userId)],
-    actor: getNotificationUser(db, claimantId),
+    recipients: [loadNotificationUser(db, purchase.userId)],
+    actor: loadNotificationUser(db, claimantId),
     data: {
       kind: "seat-claimed",
       courseId: course.id,

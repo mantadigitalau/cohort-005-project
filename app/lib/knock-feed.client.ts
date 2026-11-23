@@ -1,11 +1,12 @@
 import Knock, { type FeedItem, type FeedMetadata } from "@knocklabs/client";
-import type {
-  FeedCounts,
-  FeedNotification,
-  NotificationFeedPort,
-  NotificationFeedSession,
+import { z } from "zod";
+import {
+  parseNotificationData,
+  type FeedCounts,
+  type FeedNotification,
+  type NotificationFeedPort,
+  type NotificationFeedSession,
 } from "~/lib/notification-feed";
-import type { NotificationData } from "~/lib/notification-kinds";
 
 // ─── Knock feed adapter ───
 // The only browser code that imports a Knock SDK (docs/adr/0013). It opens
@@ -19,15 +20,20 @@ function toCounts(meta: FeedMetadata): FeedCounts {
   return { unseen: meta.unseen_count, unread: meta.unread_count };
 }
 
+/** The first actor as Knock returns it; only a named one is shown. */
+const actorSchema = z.object({
+  name: z.string().min(1),
+  avatar: z.string().nullish(),
+});
+
 function toFeedNotification(item: FeedItem): FeedNotification {
-  const actor = item.actors[0] as
-    | { name?: string | null; avatar?: string | null }
-    | undefined;
+  const actor = actorSchema.safeParse(item.actors[0]);
   return {
     id: item.id,
-    data: (item.data ?? { kind: "unknown" }) as NotificationData,
-    actor: actor?.name
-      ? { name: actor.name, avatarUrl: actor.avatar ?? null }
+    // Unreadable data draws as a plain row rather than breaking the feed.
+    data: parseNotificationData(item.data),
+    actor: actor.success
+      ? { name: actor.data.name, avatarUrl: actor.data.avatar ?? null }
       : null,
     insertedAt: item.inserted_at,
     seen: item.seen_at !== null,

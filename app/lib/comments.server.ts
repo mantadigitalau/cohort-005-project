@@ -1,12 +1,12 @@
 import { eq } from "drizzle-orm";
-import { comments, courses, lessons, modules, users } from "~/db/schema";
+import { comments, courses, lessons, modules } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
 import {
   notifySafely,
   type Notification,
   type NotificationPort,
-  type NotificationUser,
 } from "~/lib/notifications.server";
+import { loadNotificationUser } from "~/lib/notification-users.server";
 import type { Db } from "~/lib/refunds.server";
 
 // ─── Comments ───
@@ -126,21 +126,6 @@ function snippetOf(body: string): string {
     : oneLine;
 }
 
-function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    avatarUrl: user.avatarUrl,
-  };
-}
-
-function getUser(db: Db, userId: number) {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  if (!user) throw new Error(`User ${userId} not found.`);
-  return user;
-}
-
 /**
  * A new comment's Notification, from its author. `data` stays flat and scalar
  * so the vendor can find it by `commentId` when the comment is deleted. It's a
@@ -159,8 +144,8 @@ function commentNotification(
 
   return {
     kind,
-    recipients: [toNotificationUser(getUser(db, recipientId))],
-    actor: toNotificationUser(getUser(db, comment.userId)),
+    recipients: [loadNotificationUser(db, recipientId)],
+    actor: loadNotificationUser(db, comment.userId),
     data: {
       kind,
       courseId: lesson.courseId,

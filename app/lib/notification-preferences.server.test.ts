@@ -69,6 +69,12 @@ describe("which Notification switches a person sees", () => {
     ]);
   });
 
+  it("hides Instructor switches from someone with the Instructor role who teaches no course", async () => {
+    const newcomer = insertUser("Nia New", "nia@example.com", UserRole.Instructor);
+
+    expect(await visibleCategories(newcomer.id)).toEqual(["discussion-replies"]);
+  });
+
   it("treats anyone who teaches a course as an Instructor, whatever their role", async () => {
     const admin = insertUser("Ada Admin", "ada@example.com", UserRole.Admin);
     db.update(courses)

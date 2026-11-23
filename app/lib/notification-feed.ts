@@ -1,6 +1,8 @@
-import type {
-  NotificationData,
-  NotificationKind,
+import { z } from "zod";
+import {
+  NOTIFICATION_KINDS,
+  type NotificationData,
+  type NotificationKind,
 } from "~/lib/notification-kinds";
 import { commentAnchorId } from "~/lib/comments";
 import { formatPrice } from "~/lib/utils";
@@ -24,7 +26,11 @@ export type NotificationFeedSession = {
 /** One Notification as the Notification Feed shows it. */
 export type FeedNotification = {
   id: string;
-  data: NotificationData;
+  /**
+   * Null when the feed can't read it: a kind this build doesn't know yet, or
+   * a shape that isn't Cadence's. It still draws as a plain row.
+   */
+  data: NotificationData | null;
   /** Who caused it. Null for Notifications from Cadence itself. */
   actor: { name: string; avatarUrl: string | null } | null;
   insertedAt: string;
@@ -85,6 +91,17 @@ export function emptyFeed(): NotificationFeedPort {
   };
 }
 
+/** The vendor hands back whatever was sent: parse it, don't trust it. */
+const notificationDataSchema = z
+  .object({ kind: z.enum(NOTIFICATION_KINDS) })
+  .catchall(z.union([z.string(), z.number(), z.boolean(), z.null()]));
+
+/** A Notification's `data` as the vendor returned it, or null if unreadable. */
+export function parseNotificationData(raw: unknown): NotificationData | null {
+  const parsed = notificationDataSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 // ─── The feed as the popover holds it ───
 // What the bell shows, built from pages, live updates and the user's own
 // reads. Pure, so the popover's rules live here rather than in a hook.
@@ -106,6 +123,10 @@ export type FeedEvent =
   | { type: "loading-older" }
   | { type: "older-page"; page: FeedPage }
   | { type: "load-failed" }
+  /** Fetching the first page again, e.g. on opening the popover. */
+  | { type: "refreshing" }
+  /** The first page again: it replaces every loaded row. */
+  | { type: "refreshed"; page: FeedPage }
   | { type: "live"; update: FeedUpdate }
   | { type: "read"; notificationId: string }
   /** Every Notification, loaded or not. */
@@ -154,6 +175,10 @@ export function feedReducer(view: FeedView, event: FeedEvent): FeedView {
       };
     case "load-failed":
       return { ...view, loading: false };
+    case "refreshing":
+      return { ...view, loading: true };
+    case "refreshed":
+      return refreshed(view, event.page);
     case "live":
       return {
         ...view,
@@ -191,6 +216,61 @@ export function feedReducer(view: FeedView, event: FeedEvent): FeedView {
   }
 }
 
+/**
+ * The first page fetched again replaces every loaded row, so a Notification
+ * archived since (its comment was deleted) leaves the feed, and so do older
+ * pages: scrolling starts again from this page's cursor.
+ *
+ * Reads and seens made while it loaded may not have reached Knock yet, so a
+ * row the person already read or saw stays that way, and neither count goes
+ * back up. A count only drops here (an archived unread row); a new
+ * Notification raises it through a live update instead.
+ */
+function refreshed(view: FeedView, page: FeedPage): FeedView {
+  const local = new Map(view.notifications.map((n) => [n.id, n]));
+  return {
+    notifications: merge(
+      [],
+      page.notifications.map((notification) => {
+        const before = local.get(notification.id);
+        return before
+          ? {
+              ...notification,
+              seen: notification.seen || before.seen,
+              read: notification.read || before.read,
+            }
+          : notification;
+      })
+    ),
+    counts: {
+      unseen: Math.min(view.counts.unseen, page.counts.unseen),
+      unread: Math.min(view.counts.unread, page.counts.unread),
+    },
+    nextCursor: page.nextCursor,
+    loading: false,
+  };
+}
+
+/** The least time between two fetches of the first page. */
+export const FEED_REFRESH_INTERVAL_MS = 15_000;
+
+/**
+ * Whether opening the popover should fetch the first page again. Not while
+ * a page is loading, and not more than once per interval, so opening and
+ * closing quickly can't flood Knock (it answers with 429). No polling: it
+ * only ever runs when the person opens the feed.
+ */
+export function canRefresh(
+  view: FeedView,
+  lastFetchedAt: number | null,
+  now: number
+): boolean {
+  if (view.loading) return false;
+  return (
+    lastFetchedAt === null || now - lastFetchedAt >= FEED_REFRESH_INTERVAL_MS
+  );
+}
+
 /** One request at a time, and only while history is left: no 429s. */
 export function canLoadOlder(view: FeedView): boolean {
   return !view.loading && view.nextCursor !== null;
@@ -213,7 +293,9 @@ export type FeedRow = {
   href: string | null;
 };
 
-type RowFor = (notification: FeedNotification) => FeedRow;
+type RowFor = (
+  notification: FeedNotification & { data: NotificationData }
+) => FeedRow;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -314,7 +396,8 @@ function seatsLeft(count: number): string {
 }
 
 export function describeNotification(notification: FeedNotification): FeedRow {
-  const rowFor = ROWS[notification.data.kind];
-  if (rowFor) return rowFor(notification);
+  const { data } = notification;
+  const rowFor = data ? ROWS[data.kind] : undefined;
+  if (data && rowFor) return rowFor({ ...notification, data });
   return { title: "New notification", snippet: "", category: null, href: null };
 }

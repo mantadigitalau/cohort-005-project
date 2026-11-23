@@ -97,13 +97,22 @@ export interface NotificationPort {
  * Sends a Notification after the domain write has committed. Building and
  * sending it are both guarded: a failure is logged and swallowed, because a
  * Notification never fails the domain action.
+ *
+ * Nobody is notified of their own action: the actor is left out of the
+ * recipients, and a Notification with nobody left to tell isn't sent.
  */
 export async function notifySafely(
   notifier: NotificationPort,
   build: () => Notification
 ): Promise<void> {
   try {
-    await notifier.trigger(build());
+    const notification = build();
+    const actorId = notification.actor?.id;
+    const recipients = notification.recipients.filter(
+      (recipient) => recipient.id !== actorId
+    );
+    if (recipients.length === 0) return;
+    await notifier.trigger({ ...notification, recipients });
   } catch (error) {
     console.error("[notifications] sending a Notification failed:", error);
   }
@@ -186,7 +195,9 @@ export function createFakeNotifier(): FakeNotifier {
       return fake.preferences.get(userId) ?? {};
     },
     async setPreference(userId, category, channel, enabled) {
-      const current = fake.preferences.get(userId) ?? {};
+      // Like the Knock adapter: no preferences yet means start from defaults.
+      const current =
+        fake.preferences.get(userId) ?? structuredClone(DEFAULT_PREFERENCES);
       fake.preferences.set(userId, {
         ...current,
         [category]: { ...current[category], [channel]: enabled },

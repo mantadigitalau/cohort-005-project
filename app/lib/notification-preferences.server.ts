@@ -19,8 +19,9 @@ import {
 // Which switches a person sees on /settings, and whether each is on. A person
 // only sees the categories they could actually get Notifications for, based on
 // what they are or have (a Purchase, a Team Licence, a course they teach)
-// rather than their role label alone. A hidden switch keeps its stored value,
-// or the default, so it appears already set when the person later qualifies.
+// rather than their role label: Instructor switches need a course they teach.
+// A hidden switch keeps its stored value, or the default, so it appears
+// already set when the person later qualifies.
 //
 // Only the `feed` channel is shown in v1.
 
@@ -79,8 +80,7 @@ function getStanding(db: Db, userId: number): Standing {
     hasPurchase: purchase !== undefined,
     isPlatformAdmin: user?.role === UserRole.Admin,
     isTeamAdmin: teamLicence !== undefined,
-    isInstructor:
-      user?.role === UserRole.Instructor || taughtCourse !== undefined,
+    isInstructor: taughtCourse !== undefined,
   };
 }
 

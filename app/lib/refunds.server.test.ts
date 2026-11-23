@@ -315,6 +315,33 @@ describe("notifying when a Refund Request is raised", () => {
     ]);
   });
 
+  it("leaves a Platform Admin who raised it out of their own Open Refund Request", async () => {
+    const secondAdmin = db
+      .insert(schema.users)
+      .values({ name: "Sam Admin", email: "sam@example.com", role: UserRole.Admin })
+      .returning()
+      .get();
+    const purchase = buyForSelf(platformAdmin.id);
+
+    await raise(purchase.id, platformAdmin.id);
+
+    expect(
+      notifier.triggers
+        .filter((n) => n.kind === "open-refund-request")
+        .map((n) => n.recipients.map((r) => r.id))
+    ).toEqual([[secondAdmin.id]]);
+  });
+
+  it("sends no Open Refund Request when the only Platform Admin raised it", async () => {
+    const purchase = buyForSelf(platformAdmin.id);
+
+    await raise(purchase.id, platformAdmin.id);
+
+    expect(notifier.triggers.map((n) => n.kind)).toEqual([
+      "refund-request-confirmation",
+    ]);
+  });
+
   it("sends a Team Licence's confirmation to the Team Admin who bought it", async () => {
     const priya = addLearner("Priya");
     const { purchase } = buySeats(priya.id, 3);

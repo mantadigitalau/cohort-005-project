@@ -28,8 +28,11 @@ import {
   notifySafely,
   type Notification,
   type NotificationPort,
-  type NotificationUser,
 } from "~/lib/notifications.server";
+import {
+  loadNotificationUser,
+  toNotificationUser,
+} from "~/lib/notification-users.server";
 
 // ─── Refunds ───
 // Everything about Refund Requests: whether a Purchase may be refunded, raising
@@ -806,15 +809,6 @@ export async function declineRefundRequest(
   return result;
 }
 
-function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    avatarUrl: user.avatarUrl,
-  };
-}
-
 function listPlatformAdmins(db: Queryable) {
   return db
     .select()
@@ -822,12 +816,6 @@ function listPlatformAdmins(db: Queryable) {
     .where(eq(users.role, UserRole.Admin))
     .orderBy(asc(users.id))
     .all();
-}
-
-function getUser(db: Queryable, userId: number) {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  if (!user) throw new Error(`User ${userId} not found.`);
-  return user;
 }
 
 /**
@@ -847,8 +835,8 @@ function decisionNotification(
 
   return {
     kind,
-    recipients: [toNotificationUser(getUser(db, row.purchase.userId))],
-    actor: toNotificationUser(getUser(db, platformAdminId)),
+    recipients: [loadNotificationUser(db, row.purchase.userId)],
+    actor: loadNotificationUser(db, platformAdminId),
     data: {
       kind,
       courseId: row.purchase.courseId,

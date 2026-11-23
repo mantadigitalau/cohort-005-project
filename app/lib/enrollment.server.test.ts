@@ -186,6 +186,21 @@ describe("the New Enrollment Notification", () => {
     ]);
   });
 
+  it("isn't sent when the Instructor enrolls on their own course", async () => {
+    const result = await buyIndividualPurchase(
+      db,
+      base.instructor.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+
+    expect(result.ok).toBe(true);
+    expect(notifier.triggers).toEqual([]);
+  });
+
   it("isn't sent when the buyer is already enrolled", async () => {
     await buyIndividualPurchase(
       db,

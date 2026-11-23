@@ -182,19 +182,44 @@ describe("changing one preference in Knock", () => {
     });
   });
 
-  it("starts from nothing when the user has no preference set yet", async () => {
+  it("starts from the defaults when the user has no preference set yet, so Enrollments stays off", async () => {
     const knock = createStubKnock();
 
-    await knockNotifier(knock.client).setPreference(12, "enrollments", "feed", true);
+    await knockNotifier(knock.client).setPreference(
+      12,
+      "discussion-replies",
+      "feed",
+      false
+    );
 
     expect(knock.preferenceWrites).toEqual([
       {
         id: "12",
         body: {
-          categories: { enrollments: { channel_types: { in_app_feed: true } } },
+          categories: {
+            "refund-request-updates": { channel_types: { in_app_feed: true } },
+            "open-refund-requests": { channel_types: { in_app_feed: true } },
+            "seat-claims": { channel_types: { in_app_feed: true } },
+            enrollments: { channel_types: { in_app_feed: false } },
+            "discussion-questions": { channel_types: { in_app_feed: true } },
+            "discussion-replies": { channel_types: { in_app_feed: false } },
+          },
         },
       },
     ]);
+  });
+
+  it("starts from the defaults when the user's set is empty", async () => {
+    const knock = createStubKnock({ "12": { categories: {} } });
+
+    await knockNotifier(knock.client).setPreference(12, "enrollments", "feed", true);
+
+    expect(knock.preferenceWrites[0].body).toMatchObject({
+      categories: {
+        enrollments: { channel_types: { in_app_feed: true } },
+        "seat-claims": { channel_types: { in_app_feed: true } },
+      },
+    });
   });
 });
 
@@ -214,6 +239,23 @@ describe("reading preferences from Knock", () => {
     expect(preferences).toEqual({
       enrollments: { feed: true },
       "seat-claims": { feed: false },
+    });
+  });
+
+  it("ignores settings it can't read rather than trusting them", async () => {
+    const knock = createStubKnock({
+      "12": {
+        categories: {
+          enrollments: "yes please",
+          "seat-claims": { channel_types: { in_app_feed: "on" } },
+          "discussion-replies": false,
+        },
+      },
+    });
+
+    expect(await knockNotifier(knock.client).getPreferences(12)).toEqual({
+      "seat-claims": {},
+      "discussion-replies": { feed: false },
     });
   });
 

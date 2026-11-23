@@ -14,6 +14,7 @@ import { cn, formatRelativeTime } from "~/lib/utils";
 import { UserAvatar } from "~/components/user-avatar";
 import {
   canLoadOlder,
+  canRefresh,
   describeNotification,
   emptyFeed,
   feedReducer,
@@ -48,6 +49,8 @@ function useNotificationFeed(session: NotificationFeedSession | null) {
   viewRef.current = view;
   // Bumped for every port, so a disposed port's late replies are dropped.
   const generation = useRef(0);
+  // When the first page was last asked for, to space out fetching it again.
+  const lastFetchedAt = useRef<number | null>(null);
 
   const userId = session?.userId ?? null;
   const publicApiKey = session?.publicApiKey ?? null;
@@ -62,6 +65,7 @@ function useNotificationFeed(session: NotificationFeedSession | null) {
     const active = () => generation.current === mine;
     dispatch({ type: "reset" });
 
+    lastFetchedAt.current = Date.now();
     const port =
       session && userId
         ? knockFeed(session, {
@@ -119,12 +123,38 @@ function useNotificationFeed(session: NotificationFeedSession | null) {
       });
   }
 
-  function markAllSeen() {
-    if (viewRef.current.counts.unseen === 0) return;
+  function markAllSeen(): Promise<void> {
+    if (viewRef.current.counts.unseen === 0) return Promise.resolve();
     dispatch({ type: "all-seen" });
-    portRef.current.markAllSeen().catch((error) => {
+    return portRef.current.markAllSeen().catch((error) => {
       console.error("[notifications] marking all seen failed:", error);
     });
+  }
+
+  /**
+   * Opening the popover clears the badge and, at most once per interval,
+   * fetches the first page again. That replaces the loaded rows, so a
+   * Notification archived since (its comment was deleted) leaves the feed
+   * and the unread count drops. Knock's socket only announces new messages,
+   * not archived ones, so this is how an open feed learns of them.
+   */
+  function open() {
+    const seen = markAllSeen();
+    const now = Date.now();
+    if (!canRefresh(viewRef.current, lastFetchedAt.current, now)) return;
+    lastFetchedAt.current = now;
+    viewRef.current = { ...viewRef.current, loading: true };
+    dispatch({ type: "refreshing" });
+    const mine = generation.current;
+    seen
+      .then(() => portRef.current.listNotifications())
+      .then((page) => {
+        if (generation.current === mine) dispatch({ type: "refreshed", page });
+      })
+      .catch((error) => {
+        if (generation.current === mine) dispatch({ type: "load-failed" });
+        console.error("[notifications] refreshing the feed failed:", error);
+      });
   }
 
   function markRead(notificationId: string) {
@@ -143,7 +173,7 @@ function useNotificationFeed(session: NotificationFeedSession | null) {
     });
   }
 
-  return { ...view, loadOlder, markAllSeen, markRead, markAllRead };
+  return { ...view, loadOlder, open, markRead, markAllRead };
 }
 
 const CATEGORY_ICONS: Record<FeedCategory, React.ReactNode> = {
@@ -169,8 +199,8 @@ export function NotificationBell({
   function onOpenChange(next: boolean) {
     setOpen(next);
     // Opening clears the badge: every Notification is now seen, loaded or
-    // not. Seen isn't read.
-    if (next) feed.markAllSeen();
+    // not. Seen isn't read. It also drops rows archived since last time.
+    if (next) feed.open();
   }
 
   function openNotification(notification: FeedNotification) {
