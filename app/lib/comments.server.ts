@@ -15,8 +15,8 @@ import type { Db } from "~/lib/refunds.server";
 // the rules live in one place.
 //
 // Every function takes the database first and the time last, so tests can hand
-// in an in-memory database and a fixed clock. Creating a comment also takes
-// the Notification port, after the clock, like the refunds service. Failures a person can correct
+// in an in-memory database and a fixed clock. Creating and deleting a
+// comment also take the Notification port, after the clock, like the refunds service. Failures a person can correct
 // (empty body, not your comment) throw an Error whose message is shown to them.
 
 function getComment(db: Db, commentId: number) {
@@ -179,13 +179,19 @@ function commentNotification(
  * Soft-deletes a comment. Its author may delete it, and so may staff (the
  * course's Instructor or a Platform Admin), which the caller decides. Deleting
  * an already-deleted comment is a no-op that keeps the first deletion time.
+ *
+ * Once deleted, the Notifications this comment caused are archived, so they
+ * leave the recipient's feed. Only this comment's: deleting a Question leaves
+ * its Replies' Notifications alone, as those Replies stay visible. A failed
+ * archive never fails the delete.
  */
-export function deleteComment(
+export async function deleteComment(
   db: Db,
   commentId: number,
   userId: number,
   isStaff: boolean,
-  now: Date
+  now: Date,
+  notifier: NotificationPort
 ) {
   const existing = getComment(db, commentId);
   if (!existing) {
@@ -198,12 +204,28 @@ export function deleteComment(
     return existing;
   }
 
-  return db
+  const deleted = db
     .update(comments)
     .set({ deletedAt: now.toISOString() })
     .where(eq(comments.id, commentId))
     .returning()
     .get();
+
+  await archiveSafely(notifier, commentId);
+
+  return deleted;
+}
+
+/** Like notifySafely: a failed archive is logged and swallowed. */
+async function archiveSafely(notifier: NotificationPort, commentId: number) {
+  try {
+    await notifier.archiveByComment(commentId);
+  } catch (error) {
+    console.error(
+      `[notifications] archiving comment ${commentId}'s Notifications failed:`,
+      error
+    );
+  }
 }
 
 /** Edits a comment's body. Only its author may, and not once it's deleted. */

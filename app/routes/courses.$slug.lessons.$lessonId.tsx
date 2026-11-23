@@ -858,12 +858,13 @@ export async function action({ params, request }: Route.ActionArgs) {
       if (!existing || existing.lessonId !== lessonId) {
         throw data("Comment not found", { status: 404 });
       }
-      deleteComment(
+      await deleteComment(
         db,
         parsed.data.commentId,
         currentUserId,
         access.isStaff,
-        new Date()
+        new Date(),
+        notifierFromEnv()
       );
       return { ok: true };
     } catch (error) {
