@@ -23,6 +23,12 @@ import {
   REFUND_WINDOW_DAYS,
   type RuleBreak,
 } from "~/lib/refund-rules";
+import {
+  notifySafely,
+  type Notification,
+  type NotificationPort,
+  type NotificationUser,
+} from "~/lib/notifications.server";
 
 // ─── Refunds ───
 // Everything about Refund Requests: whether a Purchase may be refunded, raising
@@ -611,14 +617,15 @@ function findOpenRefundRequest(
  * - A Team Licence: its Unclaimed Seats can never be claimed. Refused if any
  *   Seat has been claimed (docs/adr/0003).
  */
-export function approveRefundRequest(
+export async function approveRefundRequest(
   db: Db,
   refundRequestId: number,
   platformAdminId: number,
   note: string | null,
-  now: Date
-): DecisionResult {
-  return db.transaction((tx): DecisionResult => {
+  now: Date,
+  notifier: NotificationPort
+): Promise<DecisionResult> {
+  const result = db.transaction((tx): DecisionResult => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
@@ -682,6 +689,21 @@ export function approveRefundRequest(
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
     };
   });
+
+  // After the commit, so the buyer is never told about a write that failed.
+  if (result.ok) {
+    await notifySafely(notifier, () => ({
+      ...decisionNotification(
+        db,
+        "refund-request-approved",
+        refundRequestId,
+        platformAdminId
+      ),
+      idempotencyKey: `refund-approved:${refundRequestId}`,
+    }));
+  }
+
+  return result;
 }
 
 /**
@@ -730,6 +752,52 @@ export function declineRefundRequest(
       ),
     };
   });
+}
+
+function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    avatarUrl: user.avatarUrl,
+  };
+}
+
+function getUser(db: Queryable, userId: number) {
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) throw new Error(`User ${userId} not found.`);
+  return user;
+}
+
+/**
+ * A decided Refund Request's Notification: to the buyer (the Team Admin, for
+ * a Team Licence), from the deciding Platform Admin.
+ */
+function decisionNotification(
+  db: Queryable,
+  kind: "refund-request-approved" | "refund-request-declined",
+  refundRequestId: number,
+  platformAdminId: number
+): Omit<Notification, "idempotencyKey"> {
+  const row = selectRefundRequests(db)
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+  if (!row) throw new Error(`Refund request ${refundRequestId} not found.`);
+
+  return {
+    kind,
+    recipients: [toNotificationUser(getUser(db, row.purchase.userId))],
+    actor: toNotificationUser(getUser(db, platformAdminId)),
+    data: {
+      kind,
+      courseId: row.purchase.courseId,
+      courseTitle: row.courseTitle,
+      courseSlug: row.courseSlug,
+      purchaseId: row.purchase.id,
+      amount: row.purchase.amountPaid,
+      decisionNote: row.decisionNote,
+    },
+  };
 }
 
 /** The email the buyer gets once their Refund Request is decided. */

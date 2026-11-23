@@ -1,0 +1,187 @@
+import { knockNotifier } from "~/lib/knock-notifier.server";
+
+// ─── Notifications ───
+// The server Notification port: how Cadence sends Notifications, in Cadence's
+// own words. Knock is the vendor (docs/adr/0013), but only the Knock adapter
+// (knock-notifier.server.ts) knows that. Domain services take a port as a
+// parameter, like `db` and `now`, so tests hand in the fake below.
+//
+// Mirrors the mailer: Knock when KNOCK_SECRET_API_KEY is set, otherwise a
+// no-op adapter that only logs, so the app runs without Knock keys.
+
+/** Every Notification in the catalogue. */
+export type NotificationKind =
+  | "refund-request-approved"
+  | "refund-request-declined"
+  | "refund-request-confirmation"
+  | "open-refund-request"
+  | "seat-claimed"
+  | "new-enrollment"
+  | "discussion-question"
+  | "discussion-reply";
+
+/** What a person can mute. Several Notification kinds can share one. */
+export type PreferenceCategory =
+  | "refund-request-updates"
+  | "open-refund-requests"
+  | "seat-claims"
+  | "enrollments"
+  | "discussion-questions"
+  | "discussion-replies";
+
+/** Where a Notification is delivered. v1 only has the Notification Feed. */
+export type NotificationChannel = "feed";
+
+export const CATEGORY_OF: Record<NotificationKind, PreferenceCategory> = {
+  "refund-request-approved": "refund-request-updates",
+  "refund-request-declined": "refund-request-updates",
+  "refund-request-confirmation": "refund-request-updates",
+  "open-refund-request": "open-refund-requests",
+  "seat-claimed": "seat-claims",
+  "new-enrollment": "enrollments",
+  "discussion-question": "discussion-questions",
+  "discussion-reply": "discussion-replies",
+};
+
+/** A person a Notification is sent to or comes from. */
+export type NotificationUser = {
+  id: number;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+};
+
+/**
+ * Everything the Notification Feed needs to draw a row. Kept flat and scalar
+ * so the vendor can filter on it (e.g. archiving by comment id).
+ */
+export type NotificationData = { kind: NotificationKind } & Record<
+  string,
+  string | number | boolean | null
+>;
+
+export type Notification = {
+  kind: NotificationKind;
+  recipients: NotificationUser[];
+  /** Who caused it. Null for Notifications from Cadence itself. */
+  actor: NotificationUser | null;
+  data: NotificationData;
+  /** One per domain event, so a retry can never send a duplicate. */
+  idempotencyKey: string;
+};
+
+/** A person's preferences: category × channel → on or off. */
+export type NotificationPreferences = Partial<
+  Record<PreferenceCategory, Partial<Record<NotificationChannel, boolean>>>
+>;
+
+export interface NotificationPort {
+  trigger(notification: Notification): Promise<void>;
+  /** Archive every Notification a comment caused. */
+  archiveByComment(commentId: number): Promise<void>;
+  /** Send a person's profile, plus default preferences if they have none. */
+  syncUser(user: NotificationUser): Promise<void>;
+  getPreferences(userId: number): Promise<NotificationPreferences>;
+  /** Change one category × channel, leaving every other preference alone. */
+  setPreference(
+    userId: number,
+    category: PreferenceCategory,
+    channel: NotificationChannel,
+    enabled: boolean
+  ): Promise<void>;
+}
+
+// ─── Sending safely ───
+
+/**
+ * Sends a Notification after the domain write has committed. Building and
+ * sending it are both guarded: a failure is logged and swallowed, because a
+ * Notification never fails the domain action.
+ */
+export async function notifySafely(
+  notifier: NotificationPort,
+  build: () => Notification
+): Promise<void> {
+  try {
+    await notifier.trigger(build());
+  } catch (error) {
+    console.error("[notifications] sending a Notification failed:", error);
+  }
+}
+
+// ─── No-op adapter ───
+
+export function loggingNotifier(
+  log: (message: string) => void = console.log
+): NotificationPort {
+  return {
+    async trigger(notification) {
+      log(
+        `[notifications] no Knock key; would send ${notification.kind} to ${notification.recipients
+          .map((recipient) => recipient.id)
+          .join(", ")} (${notification.idempotencyKey})`
+      );
+    },
+    async archiveByComment(commentId) {
+      log(`[notifications] no Knock key; would archive comment ${commentId}`);
+    },
+    async syncUser(user) {
+      log(`[notifications] no Knock key; would sync user ${user.id}`);
+    },
+    async getPreferences() {
+      return {};
+    },
+    async setPreference(userId, category, channel, enabled) {
+      log(
+        `[notifications] no Knock key; would set ${category}.${channel}=${enabled} for user ${userId}`
+      );
+    },
+  };
+}
+
+// ─── Fake adapter, for tests ───
+
+export type FakeNotifier = NotificationPort & {
+  triggers: Notification[];
+  archivedComments: number[];
+  syncedUsers: NotificationUser[];
+  preferences: Map<number, NotificationPreferences>;
+};
+
+export function createFakeNotifier(): FakeNotifier {
+  const fake: FakeNotifier = {
+    triggers: [],
+    archivedComments: [],
+    syncedUsers: [],
+    preferences: new Map(),
+    async trigger(notification) {
+      fake.triggers.push(notification);
+    },
+    async archiveByComment(commentId) {
+      fake.archivedComments.push(commentId);
+    },
+    async syncUser(user) {
+      fake.syncedUsers.push(user);
+    },
+    async getPreferences(userId) {
+      return fake.preferences.get(userId) ?? {};
+    },
+    async setPreference(userId, category, channel, enabled) {
+      const current = fake.preferences.get(userId) ?? {};
+      fake.preferences.set(userId, {
+        ...current,
+        [category]: { ...current[category], [channel]: enabled },
+      });
+    },
+  };
+  return fake;
+}
+
+// ─── Choosing an adapter ───
+
+export function notifierFromEnv(
+  env: Record<string, string | undefined> = process.env
+): NotificationPort {
+  const secretKey = env.KNOCK_SECRET_API_KEY;
+  return secretKey ? knockNotifier(secretKey) : loggingNotifier();
+}

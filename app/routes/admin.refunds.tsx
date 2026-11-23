@@ -22,6 +22,7 @@ import {
 } from "~/lib/refunds.server";
 import { RULE_BREAK_LABELS } from "~/lib/refund-rules";
 import { sendEmail } from "~/lib/mailer.server";
+import { notifierFromEnv } from "~/lib/notifications.server";
 
 const refundFilterSchema = z
   .nativeEnum(RefundStatus)
@@ -108,12 +109,13 @@ export async function action({ request }: Route.ActionArgs) {
 
   const result =
     intent === "approve"
-      ? approveRefundRequest(
+      ? await approveRefundRequest(
           db,
           refundRequestId,
           platformAdmin.id,
           note || null,
-          new Date()
+          new Date(),
+          notifierFromEnv()
         )
       : declineRefundRequest(
           db,
