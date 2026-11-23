@@ -230,10 +230,74 @@ describe("drawing a Seat claimed row", () => {
   });
 });
 
+const question = {
+  kind: "discussion-question",
+  courseId: 3,
+  courseTitle: "Test Course",
+  courseSlug: "test-course",
+  lessonId: 12,
+  lessonTitle: "Closures",
+  commentId: 40,
+  snippet: "How do closures work?",
+} as const;
+
+describe("drawing a New Discussion Question row", () => {
+  const asked = feedNotification(question, {
+    actor: { name: "Ben Learner", avatarUrl: null },
+  });
+
+  it("says who asked on which lesson, under the discussion icon", () => {
+    expect(describeNotification(asked)).toMatchObject({
+      title: "Ben Learner asked a question on Closures",
+      category: "discussion",
+    });
+  });
+
+  it("shows the question's snippet", () => {
+    expect(describeNotification(asked).snippet).toBe("How do closures work?");
+  });
+
+  it("goes to the question's anchor on the lesson page", () => {
+    expect(describeNotification(asked).href).toBe(
+      "/courses/test-course/lessons/12#comment-40"
+    );
+  });
+});
+
+describe("drawing a Discussion Reply row", () => {
+  const replied = feedNotification(
+    {
+      ...question,
+      kind: "discussion-reply",
+      commentId: 41,
+      snippet: "Think of a backpack.",
+    },
+    { actor: { name: "Test Instructor", avatarUrl: null } }
+  );
+
+  it("says who replied to your question on which lesson, under the discussion icon", () => {
+    expect(describeNotification(replied)).toMatchObject({
+      title: "Test Instructor replied to your question on Closures",
+      snippet: "Think of a backpack.",
+      category: "discussion",
+    });
+  });
+
+  it("goes to the reply's anchor on the lesson page", () => {
+    expect(describeNotification(replied).href).toBe(
+      "/courses/test-course/lessons/12#comment-41"
+    );
+  });
+});
+
 describe("drawing a row whose kind the feed doesn't know yet", () => {
   it("still draws a row with nowhere to go, rather than breaking the feed", () => {
     expect(
-      describeNotification(feedNotification({ kind: "discussion-reply" }))
+      describeNotification(
+        feedNotification({
+          kind: "not-a-real-kind" as FeedNotification["data"]["kind"],
+        })
+      )
     ).toEqual({
       title: "New notification",
       snippet: "",

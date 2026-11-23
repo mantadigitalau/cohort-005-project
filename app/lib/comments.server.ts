@@ -1,6 +1,12 @@
 import { eq } from "drizzle-orm";
-import { comments, courses, lessons, modules } from "~/db/schema";
+import { comments, courses, lessons, modules, users } from "~/db/schema";
 import { MAX_COMMENT_LENGTH, MIN_COMMENT_LENGTH } from "~/lib/comments";
+import {
+  notifySafely,
+  type Notification,
+  type NotificationPort,
+  type NotificationUser,
+} from "~/lib/notifications.server";
 import type { Db } from "~/lib/refunds.server";
 
 // ─── Comments ───
@@ -9,7 +15,8 @@ import type { Db } from "~/lib/refunds.server";
 // the rules live in one place.
 //
 // Every function takes the database first and the time last, so tests can hand
-// in an in-memory database and a fixed clock. Failures a person can correct
+// in an in-memory database and a fixed clock. Creating a comment also takes
+// the Notification port, after the clock, like the refunds service. Failures a person can correct
 // (empty body, not your comment) throw an Error whose message is shown to them.
 
 function getComment(db: Db, commentId: number) {
@@ -18,7 +25,13 @@ function getComment(db: Db, commentId: number) {
 
 function getCourseForLesson(db: Db, lessonId: number) {
   return db
-    .select({ courseId: courses.id })
+    .select({
+      courseId: courses.id,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+      instructorId: courses.instructorId,
+      lessonTitle: lessons.title,
+    })
     .from(lessons)
     .innerJoin(modules, eq(lessons.moduleId, modules.id))
     .innerJoin(courses, eq(modules.courseId, courses.id))
@@ -42,23 +55,30 @@ function assertValidBody(body: string) {
 /**
  * Creates a Discussion Question (`parentId` null) or a Discussion Reply to a
  * top-level comment on the same lesson. Replies are one level deep only.
+ *
+ * Once written, it notifies whoever it concerns: a Question the course's
+ * Instructor (unless they asked it), a Reply the Question's author (unless
+ * they wrote it). A failed Notification never fails the comment.
  */
-export function createComment(
+export async function createComment(
   db: Db,
   userId: number,
   lessonId: number,
   parentId: number | null,
   body: string,
-  now: Date
+  now: Date,
+  notifier: NotificationPort
 ) {
   const trimmed = assertValidBody(body);
 
-  if (!getCourseForLesson(db, lessonId)) {
+  const lesson = getCourseForLesson(db, lessonId);
+  if (!lesson) {
     throw new Error("Lesson not found");
   }
 
+  let parent: typeof comments.$inferSelect | undefined;
   if (parentId !== null) {
-    const parent = getComment(db, parentId);
+    parent = getComment(db, parentId);
     if (!parent) {
       throw new Error("Parent comment not found");
     }
@@ -70,7 +90,7 @@ export function createComment(
     }
   }
 
-  return db
+  const comment = db
     .insert(comments)
     .values({
       userId,
@@ -81,6 +101,78 @@ export function createComment(
     })
     .returning()
     .get();
+
+  // A Question goes to the course's Instructor; a Reply only to the
+  // Question's author, never to others in the thread.
+  const recipientId = parent ? parent.userId : lesson.instructorId;
+  // Nobody is notified of their own action.
+  if (recipientId !== null && recipientId !== userId) {
+    await notifySafely(notifier, () =>
+      commentNotification(db, comment, recipientId)
+    );
+  }
+
+  return comment;
+}
+
+/** The longest snippet a Notification carries. */
+const SNIPPET_LENGTH = 140;
+
+/** A comment's body on one line, cut short if it's long. */
+function snippetOf(body: string): string {
+  const oneLine = body.replace(/\s+/g, " ").trim();
+  return oneLine.length > SNIPPET_LENGTH
+    ? `${oneLine.slice(0, SNIPPET_LENGTH - 1).trimEnd()}…`
+    : oneLine;
+}
+
+function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    avatarUrl: user.avatarUrl,
+  };
+}
+
+function getUser(db: Db, userId: number) {
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) throw new Error(`User ${userId} not found.`);
+  return user;
+}
+
+/**
+ * A new comment's Notification, from its author. `data` stays flat and scalar
+ * so the vendor can find it by `commentId` when the comment is deleted. It's a
+ * snapshot: editing the comment later doesn't change it.
+ */
+function commentNotification(
+  db: Db,
+  comment: typeof comments.$inferSelect,
+  recipientId: number
+): Notification {
+  const lesson = getCourseForLesson(db, comment.lessonId);
+  if (!lesson) throw new Error(`Lesson ${comment.lessonId} not found.`);
+
+  const kind =
+    comment.parentId === null ? "discussion-question" : "discussion-reply";
+
+  return {
+    kind,
+    recipients: [toNotificationUser(getUser(db, recipientId))],
+    actor: toNotificationUser(getUser(db, comment.userId)),
+    data: {
+      kind,
+      courseId: lesson.courseId,
+      courseTitle: lesson.courseTitle,
+      courseSlug: lesson.courseSlug,
+      lessonId: comment.lessonId,
+      lessonTitle: lesson.lessonTitle,
+      commentId: comment.id,
+      snippet: snippetOf(comment.body),
+    },
+    idempotencyKey: `${kind}:${comment.id}`,
+  };
 }
 
 /**
