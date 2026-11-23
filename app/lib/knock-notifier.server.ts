@@ -1,4 +1,4 @@
-import Knock from "@knocklabs/node";
+import Knock, { signUserToken } from "@knocklabs/node";
 import type {
   NotificationKind,
   NotificationPort,
@@ -34,6 +34,22 @@ export const KNOCK_CATEGORY_KEYS: Record<PreferenceCategory, string> = {
 
 export function knockUserId(cadenceUserId: number): string {
   return String(cadenceUserId);
+}
+
+/**
+ * An RS256 user token for Knock's enhanced security: it lets the browser read
+ * this one user's Notification Feed, and no one else's. The signing key is
+ * PEM or base64-encoded PEM, as Knock's dashboard hands it out.
+ */
+export function signKnockUserToken(
+  cadenceUserId: number,
+  signingKey: string,
+  expiresInSeconds: number
+): Promise<string> {
+  return signUserToken(knockUserId(cadenceUserId), {
+    signingKey,
+    expiresInSeconds,
+  });
 }
 
 function toKnockUser(user: NotificationUser) {
