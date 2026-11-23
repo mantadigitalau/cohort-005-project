@@ -1,9 +1,12 @@
-import Knock, { signUserToken } from "@knocklabs/node";
-import type {
-  NotificationKind,
-  NotificationPort,
-  NotificationUser,
-  PreferenceCategory,
+import Knock, { NotFoundError, signUserToken } from "@knocklabs/node";
+import {
+  DEFAULT_PREFERENCES,
+  type NotificationChannel,
+  type NotificationKind,
+  type NotificationPort,
+  type NotificationPreferences,
+  type NotificationUser,
+  type PreferenceCategory,
 } from "~/lib/notifications.server";
 
 // ─── Knock adapter ───
@@ -31,6 +34,13 @@ export const KNOCK_CATEGORY_KEYS: Record<PreferenceCategory, string> = {
   "discussion-questions": "discussion-questions",
   "discussion-replies": "discussion-replies",
 };
+
+export const KNOCK_CHANNEL_TYPES: Record<NotificationChannel, string> = {
+  feed: "in_app_feed",
+};
+
+/** Every user has one preference set in Knock: the "default" one. */
+const PREFERENCE_SET = "default";
 
 export function knockUserId(cadenceUserId: number): string {
   return String(cadenceUserId);
@@ -61,12 +71,52 @@ function toKnockUser(user: NotificationUser) {
   };
 }
 
+function toKnockPreferences(preferences: NotificationPreferences) {
+  const categories: Record<
+    string,
+    { channel_types: Record<string, boolean> }
+  > = {};
+  for (const [category, channels] of Object.entries(preferences)) {
+    const channelTypes: Record<string, boolean> = {};
+    for (const [channel, enabled] of Object.entries(channels ?? {})) {
+      channelTypes[KNOCK_CHANNEL_TYPES[channel as NotificationChannel]] =
+        enabled;
+    }
+    categories[KNOCK_CATEGORY_KEYS[category as PreferenceCategory]] = {
+      channel_types: channelTypes,
+    };
+  }
+  return { categories };
+}
+
 function notYet(method: string): never {
   throw new Error(`Knock adapter: ${method} is not implemented yet.`);
 }
 
-export function knockNotifier(secretApiKey: string): NotificationPort {
-  const knock = new Knock({ apiKey: secretApiKey });
+/** The parts of the Knock SDK Cadence uses; tests hand in a stand-in. */
+export type KnockClient = {
+  workflows: Pick<Knock["workflows"], "trigger">;
+  users: Pick<Knock["users"], "update" | "getPreferences" | "setPreferences">;
+};
+
+export function knockNotifier(
+  secretApiKeyOrClient: string | KnockClient
+): NotificationPort {
+  const knock: KnockClient =
+    typeof secretApiKeyOrClient === "string"
+      ? new Knock({ apiKey: secretApiKeyOrClient })
+      : secretApiKeyOrClient;
+
+  /** A missing set (404) and an empty one both mean "never had any". */
+  async function hasPreferences(knockId: string): Promise<boolean> {
+    try {
+      const set = await knock.users.getPreferences(knockId, PREFERENCE_SET);
+      return Object.keys(set.categories ?? {}).length > 0;
+    } catch (error) {
+      if (error instanceof NotFoundError) return false;
+      throw error;
+    }
+  }
 
   return {
     async trigger(notification) {
@@ -83,8 +133,18 @@ export function knockNotifier(secretApiKey: string): NotificationPort {
     async archiveByComment() {
       notYet("archiveByComment");
     },
-    async syncUser() {
-      notYet("syncUser");
+    async syncUser(user) {
+      const { id, ...profile } = toKnockUser(user);
+      await knock.users.update(id, profile);
+
+      // Cadence owns the defaults, and never overwrites a choice once made.
+      if (!(await hasPreferences(id))) {
+        await knock.users.setPreferences(
+          id,
+          PREFERENCE_SET,
+          toKnockPreferences(DEFAULT_PREFERENCES)
+        );
+      }
     },
     async getPreferences() {
       return notYet("getPreferences");

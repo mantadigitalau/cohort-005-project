@@ -7,6 +7,8 @@ import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { UserRole, users } from "~/db/schema";
 import { db } from "~/db";
+import { notifierFromEnv } from "~/lib/notifications.server";
+import { updateUserAsAdmin } from "~/lib/users.server";
 import { eq } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -41,20 +43,6 @@ function getAllUsers() {
 
 function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
-}
-
-function updateUser(
-  id: number,
-  name: string,
-  email: string,
-  bio: string | null
-) {
-  return db
-    .update(users)
-    .set({ name, email, bio })
-    .where(eq(users.id, id))
-    .returning()
-    .get();
 }
 
 function updateUserRole(id: number, role: UserRole) {
@@ -118,8 +106,10 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === "update-user") {
     const { userId, name, email } = parsed.data;
-    const user = getUserById(userId);
-    updateUser(userId, name, email, user?.bio ?? null);
+    if (!getUserById(userId)) {
+      throw data("User not found.", { status: 404 });
+    }
+    await updateUserAsAdmin(db, notifierFromEnv(), userId, name, email);
     return { success: true };
   }
 

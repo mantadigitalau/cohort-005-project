@@ -14,6 +14,11 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { notifierFromEnv } from "../app/lib/notifications.server";
+import { syncAllUsers } from "../app/lib/users.server";
+import { loadDotEnv } from "./load-env";
+
+loadDotEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2810,6 +2815,15 @@ This course is still in draft while the cluster examples are rewritten against t
   }
 
   console.log(`Created ${watchEventRows.length} video watch events.`);
+
+  // ─── Notifications ───
+  // Give every seeded user a Knock profile and default preferences. Without a
+  // Knock key in .env this only logs.
+
+  const sync = await syncAllUsers(db, notifierFromEnv());
+  console.log(
+    `Synced ${sync.synced} users to Notifications (${sync.failed} failed).`
+  );
 
   // ─── Summary ───
 
