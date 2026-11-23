@@ -80,7 +80,7 @@ describe("claimSeat", () => {
       await claimSeat(db, "nope", base.user.id, "NL", NOW, notifier)
     ).toEqual({
       ok: false,
-      error: "Coupon not found",
+      error: "Seat not found",
     });
   });
 
@@ -99,7 +99,7 @@ describe("claimSeat", () => {
 
     expect(result).toEqual({
       ok: false,
-      error: "Coupon has already been redeemed",
+      error: "This Seat has already been claimed",
     });
   });
 

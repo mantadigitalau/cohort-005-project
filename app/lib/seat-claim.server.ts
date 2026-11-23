@@ -66,11 +66,11 @@ export async function claimSeat(
 ): Promise<ClaimSeatResult> {
   const seat = getSeatByCode(db, code);
   if (!seat) {
-    return { ok: false, error: "Coupon not found" };
+    return { ok: false, error: "Seat not found" };
   }
 
   if (seat.redeemedByUserId !== null) {
-    return { ok: false, error: "Coupon has already been redeemed" };
+    return { ok: false, error: "This Seat has already been claimed" };
   }
 
   const availability = getSeatAvailability(db, seat);
@@ -89,7 +89,7 @@ export async function claimSeat(
     return {
       ok: false,
       error:
-        "This coupon can only be redeemed from the same country as the purchaser",
+        "This Seat can only be claimed from the same country as the purchaser",
     };
   }
 
