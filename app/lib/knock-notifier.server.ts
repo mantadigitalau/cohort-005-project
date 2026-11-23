@@ -73,6 +73,57 @@ function toKnockPreferences(preferences: NotificationPreferences) {
   return { categories };
 }
 
+const CATEGORY_OF_KNOCK_KEY = Object.fromEntries(
+  Object.entries(KNOCK_CATEGORY_KEYS).map(([category, key]) => [key, category])
+) as Record<string, PreferenceCategory>;
+
+const CHANNEL_OF_KNOCK_TYPE = Object.fromEntries(
+  Object.entries(KNOCK_CHANNEL_TYPES).map(([channel, type]) => [type, channel])
+) as Record<string, NotificationChannel>;
+
+type KnockPreferenceSet = Awaited<ReturnType<Knock["users"]["getPreferences"]>>;
+type KnockCategorySetting = NonNullable<
+  KnockPreferenceSet["categories"]
+>[string];
+
+/**
+ * Reads Cadence's categories out of a Knock set. A whole-category boolean
+ * applies to every channel; keys Cadence doesn't know are ignored.
+ */
+function fromKnockPreferences(set: KnockPreferenceSet): NotificationPreferences {
+  const preferences: NotificationPreferences = {};
+  for (const [key, setting] of Object.entries(set.categories ?? {})) {
+    const category = CATEGORY_OF_KNOCK_KEY[key];
+    if (!category) continue;
+    if (typeof setting === "boolean") {
+      preferences[category] = { feed: setting };
+      continue;
+    }
+    const channels: Partial<Record<NotificationChannel, boolean>> = {};
+    for (const [type, enabled] of Object.entries(setting.channel_types ?? {})) {
+      const channel = CHANNEL_OF_KNOCK_TYPE[type];
+      if (channel && typeof enabled === "boolean") channels[channel] = enabled;
+    }
+    preferences[category] = channels;
+  }
+  return preferences;
+}
+
+/** Turns one category's setting on or off for one channel, keeping the rest. */
+function withChannel(
+  setting: KnockCategorySetting | undefined,
+  channelType: string,
+  enabled: boolean
+): KnockCategorySetting {
+  if (setting === undefined || typeof setting === "boolean") {
+    return { channel_types: { [channelType]: enabled } };
+  }
+  return {
+    ...setting,
+    channel_types: { ...setting.channel_types, [channelType]: enabled },
+  };
+}
+
 function notYet(method: string): never {
   throw new Error(`Knock adapter: ${method} is not implemented yet.`);
 }
@@ -91,15 +142,20 @@ export function knockNotifier(
       ? new Knock({ apiKey: secretApiKeyOrClient })
       : secretApiKeyOrClient;
 
-  /** A missing set (404) and an empty one both mean "never had any". */
-  async function hasPreferences(knockId: string): Promise<boolean> {
+  /** A user's preference set, or null if Knock has none (404). */
+  async function readSet(knockId: string): Promise<KnockPreferenceSet | null> {
     try {
-      const set = await knock.users.getPreferences(knockId, PREFERENCE_SET);
-      return Object.keys(set.categories ?? {}).length > 0;
+      return await knock.users.getPreferences(knockId, PREFERENCE_SET);
     } catch (error) {
-      if (error instanceof NotFoundError) return false;
+      if (error instanceof NotFoundError) return null;
       throw error;
     }
+  }
+
+  /** A missing set and an empty one both mean "never had any". */
+  async function hasPreferences(knockId: string): Promise<boolean> {
+    const set = await readSet(knockId);
+    return Object.keys(set?.categories ?? {}).length > 0;
   }
 
   return {
@@ -130,11 +186,27 @@ export function knockNotifier(
         );
       }
     },
-    async getPreferences() {
-      return notYet("getPreferences");
+    async getPreferences(userId) {
+      const set = await readSet(knockUserId(userId));
+      return set ? fromKnockPreferences(set) : {};
     },
-    async setPreference() {
-      notYet("setPreference");
+    async setPreference(userId, category, channel, enabled) {
+      // Knock's setPreferences replaces the whole set, so read the current
+      // one and write it back with only this category × channel changed.
+      const id = knockUserId(userId);
+      const set = await readSet(id);
+      const key = KNOCK_CATEGORY_KEYS[category];
+      const categories = { ...set?.categories };
+      categories[key] = withChannel(
+        categories[key],
+        KNOCK_CHANNEL_TYPES[channel],
+        enabled
+      );
+      await knock.users.setPreferences(id, PREFERENCE_SET, {
+        ...(set?.channel_types && { channel_types: set.channel_types }),
+        ...(set?.workflows && { workflows: set.workflows }),
+        categories,
+      });
     },
   };
 }
