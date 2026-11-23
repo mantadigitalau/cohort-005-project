@@ -119,6 +119,39 @@ const ROWS: Partial<Record<NotificationKind, RowFor>> = {
     category: "refund",
     href: "/settings#refund-requests",
   }),
+  "refund-request-declined": ({ data }) => ({
+    title: "Your Refund Request was declined",
+    snippet: [
+      text(data.courseTitle),
+      quoted(data.decisionNote),
+      "You can ask again",
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    category: "refund",
+    href: "/settings#refund-requests",
+  }),
+  // From Cadence itself, about the buyer's own request: there's nowhere to go,
+  // so clicking only marks it read and the popover stays open.
+  "refund-request-confirmation": ({ data }) => ({
+    title: "Your Refund Request is under review",
+    snippet: `${text(data.courseTitle)} · ${formatPrice(Number(data.amount))}`,
+    category: "refund",
+    href: null,
+  }),
+  // A snapshot: it reads the same after another Platform Admin decides it.
+  "open-refund-request": ({ data }) => ({
+    title: `${text(data.buyerName) || "Someone"} asked for a refund`,
+    snippet: [
+      text(data.courseTitle),
+      formatPrice(Number(data.amount)),
+      quoted(data.reason),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    category: "refund",
+    href: "/admin/refunds",
+  }),
 };
 
 export function describeNotification(notification: FeedNotification): FeedRow {
