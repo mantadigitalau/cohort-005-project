@@ -2,7 +2,20 @@ import { Outlet } from "react-router";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
+import { useEffect } from "react";
+import { useFetcher } from "react-router";
+// PROTOTYPE — Notification Feed (wayfinder ticket #20)
+import { getFeedAuth } from "~/lib/knock-prototype.server";
+import { KnockFeedProvider } from "~/components/notification-feed-prototype/knock-feed";
+import {
+  VARIANTS,
+  VARIANT_NAMES,
+  BellPopover,
+  InboxNavItem,
+  ActivityDrawer,
+} from "~/components/notification-feed-prototype/variants";
+import { PrototypeSwitcher, usePrototypeVariant } from "~/components/prototype-switcher";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { eq, and, or, sql, desc } from "drizzle-orm";
@@ -213,6 +226,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    feedAuth: currentUserId ? await getFeedAuth(currentUserId) : null,
   };
 }
 
@@ -225,15 +239,27 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    feedAuth,
   } = loaderData;
+  const variant = usePrototypeVariant(VARIANTS);
+  const notify = useFetcher<{ ok: boolean; error?: string }>();
+  useEffect(() => {
+    if (notify.state === "idle" && notify.data && !notify.data.ok) {
+      toast.error(`Knock: ${notify.data.error}`);
+    }
+  }, [notify.state, notify.data]);
 
   return (
+    <KnockFeedProvider auth={feedAuth}>
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        headerSlot={feedAuth && variant === "A" ? <BellPopover /> : null}
+        navSlot={feedAuth && variant === "B" ? <InboxNavItem /> : null}
       />
+      {feedAuth && variant === "C" && <ActivityDrawer />}
       <main className="flex-1 overflow-y-auto">
         <Outlet />
       </main>
@@ -245,6 +271,25 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         countries={countries}
       />
       <Toaster position="bottom-right" richColors closeButton />
+      {feedAuth && (
+        <PrototypeSwitcher
+          variants={VARIANTS}
+          current={variant}
+          names={VARIANT_NAMES}
+          extra={
+            <notify.Form method="post" action="/api/prototype-notify">
+              <button
+                type="submit"
+                className="ml-1 rounded-full bg-fuchsia-600 px-3 py-0.5 text-xs font-semibold hover:bg-fuchsia-500"
+                title="Trigger a random catalogue Notification to the current user via Knock"
+              >
+                {notify.state === "idle" ? "+ send me one" : "sending…"}
+              </button>
+            </notify.Form>
+          }
+        />
+      )}
     </div>
+    </KnockFeedProvider>
   );
 }
