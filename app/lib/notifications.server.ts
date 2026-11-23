@@ -75,6 +75,20 @@ export type NotificationPreferences = Partial<
   Record<PreferenceCategory, Partial<Record<NotificationChannel, boolean>>>
 >;
 
+/**
+ * What a new person starts with: every category on in the feed except
+ * Enrollments, which is opt-in. Knock's environment default can only be set in
+ * its dashboard, so Cadence writes these per user when it syncs them.
+ */
+export const DEFAULT_PREFERENCES = {
+  "refund-request-updates": { feed: true },
+  "open-refund-requests": { feed: true },
+  "seat-claims": { feed: true },
+  enrollments: { feed: false },
+  "discussion-questions": { feed: true },
+  "discussion-replies": { feed: true },
+} satisfies Record<PreferenceCategory, Record<NotificationChannel, boolean>>;
+
 export interface NotificationPort {
   trigger(notification: Notification): Promise<void>;
   /** Archive every Notification a comment caused. */
@@ -162,6 +176,9 @@ export function createFakeNotifier(): FakeNotifier {
     },
     async syncUser(user) {
       fake.syncedUsers.push(user);
+      if (!fake.preferences.has(user.id)) {
+        fake.preferences.set(user.id, structuredClone(DEFAULT_PREFERENCES));
+      }
     },
     async getPreferences(userId) {
       return fake.preferences.get(userId) ?? {};
