@@ -55,6 +55,100 @@ describe("drawing a Refund Request approved row", () => {
   });
 });
 
+const declined = {
+  kind: "refund-request-declined",
+  courseId: 3,
+  courseTitle: "Test Course",
+  courseSlug: "test-course",
+  purchaseId: 9,
+  amount: 7900,
+  decisionNote: "You finished the course.",
+} as const;
+
+describe("drawing a Refund Request declined row", () => {
+  it("says the Refund Request was declined, under the refund icon", () => {
+    expect(describeNotification(feedNotification(declined))).toMatchObject({
+      title: "Your Refund Request was declined",
+      category: "refund",
+    });
+  });
+
+  it("shows the decision note and that the buyer can ask again", () => {
+    expect(describeNotification(feedNotification(declined)).snippet).toBe(
+      "Test Course · “You finished the course.” · You can ask again"
+    );
+  });
+
+  it("goes to where the buyer sees their Refund Requests", () => {
+    expect(describeNotification(feedNotification(declined)).href).toBe(
+      "/settings#refund-requests"
+    );
+  });
+});
+
+const confirmation = {
+  kind: "refund-request-confirmation",
+  refundRequestId: 12,
+  courseId: 3,
+  courseTitle: "Test Course",
+  courseSlug: "test-course",
+  purchaseId: 9,
+  amount: 7900,
+} as const;
+
+describe("drawing a Refund Request confirmation row", () => {
+  it("says the Refund Request is under review, naming the course and amount", () => {
+    expect(
+      describeNotification(feedNotification(confirmation, { actor: null }))
+    ).toMatchObject({
+      title: "Your Refund Request is under review",
+      snippet: "Test Course · $79.00",
+      category: "refund",
+    });
+  });
+
+  it("goes nowhere, so clicking it only marks it read", () => {
+    expect(
+      describeNotification(feedNotification(confirmation, { actor: null })).href
+    ).toBeNull();
+  });
+});
+
+const openRefundRequest = {
+  kind: "open-refund-request",
+  refundRequestId: 12,
+  courseId: 3,
+  courseTitle: "Test Course",
+  courseSlug: "test-course",
+  purchaseId: 9,
+  amount: 7900,
+  reason: "It was not what I expected.",
+  buyerName: "Liam Student",
+} as const;
+
+describe("drawing an Open Refund Request row", () => {
+  it("says who asked for a refund, under the refund icon", () => {
+    expect(
+      describeNotification(feedNotification(openRefundRequest))
+    ).toMatchObject({
+      title: "Liam Student asked for a refund",
+      category: "refund",
+    });
+  });
+
+  it("shows the course, the amount and the reason", () => {
+    expect(
+      describeNotification(feedNotification(openRefundRequest)).snippet
+    ).toBe("Test Course · $79.00 · “It was not what I expected.”");
+  });
+
+  it("goes to the refund review page", () => {
+    expect(
+      describeNotification(feedNotification(openRefundRequest)).href
+    ).toBe("/admin/refunds");
+  });
+});
+
 const question = {
   kind: "discussion-question",
   courseId: 3,

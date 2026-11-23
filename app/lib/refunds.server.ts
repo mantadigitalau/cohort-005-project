@@ -15,6 +15,7 @@ import {
   videoWatchEvents,
   LessonProgressStatus,
   RefundStatus,
+  UserRole,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
 import {
@@ -360,13 +361,14 @@ export type RaiseResult =
   | { ok: true; refundRequestId: number; kind: PurchaseKind; email: Email }
   | Failure;
 
-export function raiseRefundRequest(
+export async function raiseRefundRequest(
   db: Db,
   purchaseId: number,
   buyerId: number,
   reason: string,
-  now: Date
-): RaiseResult {
+  now: Date,
+  notifier: NotificationPort
+): Promise<RaiseResult> {
   const check = checkRefundRequest(db, purchaseId, buyerId, now);
   if (!check.ok) return check;
 
@@ -392,6 +394,41 @@ export function raiseRefundRequest(
     })
     .returning()
     .get();
+
+  // After the write, so nobody is told about a request that wasn't saved.
+  const about = {
+    refundRequestId: refundRequest.id,
+    courseId: course.id,
+    courseTitle: course.title,
+    courseSlug: course.slug,
+    purchaseId: purchase.id,
+    amount: purchase.amountPaid,
+  };
+
+  // The one Notification that goes to the person who acted: there is no one
+  // else to tell them their request is waiting on a decision.
+  await notifySafely(notifier, () => ({
+    kind: "refund-request-confirmation",
+    recipients: [toNotificationUser(buyer)],
+    actor: null,
+    data: { kind: "refund-request-confirmation", ...about },
+    idempotencyKey: `refund-raised:${refundRequest.id}`,
+  }));
+
+  // Every Platform Admin at this moment. Role isn't synced to the vendor, so
+  // someone promoted a minute ago is included with nothing set up.
+  await notifySafely(notifier, () => ({
+    kind: "open-refund-request",
+    recipients: listPlatformAdmins(db).map(toNotificationUser),
+    actor: toNotificationUser(buyer),
+    data: {
+      kind: "open-refund-request",
+      ...about,
+      reason,
+      buyerName: buyer.name,
+    },
+    idempotencyKey: `refund-open:${refundRequest.id}`,
+  }));
 
   return {
     ok: true,
@@ -711,13 +748,14 @@ export async function approveRefundRequest(
  * the buyer may raise a new Refund Request. The note is required: it is how
  * the buyer learns whether another request is worth raising.
  */
-export function declineRefundRequest(
+export async function declineRefundRequest(
   db: Db,
   refundRequestId: number,
   platformAdminId: number,
   note: string,
-  now: Date
-): DecisionResult {
+  now: Date,
+  notifier: NotificationPort
+): Promise<DecisionResult> {
   const trimmedNote = note.trim();
 
   if (trimmedNote.length === 0) {
@@ -728,7 +766,7 @@ export function declineRefundRequest(
     };
   }
 
-  return db.transaction((tx): DecisionResult => {
+  const result = db.transaction((tx): DecisionResult => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
@@ -752,6 +790,20 @@ export function declineRefundRequest(
       ),
     };
   });
+
+  if (result.ok) {
+    await notifySafely(notifier, () => ({
+      ...decisionNotification(
+        db,
+        "refund-request-declined",
+        refundRequestId,
+        platformAdminId
+      ),
+      idempotencyKey: `refund-declined:${refundRequestId}`,
+    }));
+  }
+
+  return result;
 }
 
 function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
@@ -761,6 +813,15 @@ function toNotificationUser(user: typeof users.$inferSelect): NotificationUser {
     email: user.email,
     avatarUrl: user.avatarUrl,
   };
+}
+
+function listPlatformAdmins(db: Queryable) {
+  return db
+    .select()
+    .from(users)
+    .where(eq(users.role, UserRole.Admin))
+    .orderBy(asc(users.id))
+    .all();
 }
 
 function getUser(db: Queryable, userId: number) {

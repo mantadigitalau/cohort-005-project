@@ -138,16 +138,25 @@ function isEnrolled(userId: number) {
     .get();
 }
 
-function raise(purchaseId: number, buyerId: number) {
-  const result = raiseRefundRequest(
+async function raise(purchaseId: number, buyerId: number) {
+  const result = await raiseRefundRequest(
     db,
     purchaseId,
     buyerId,
     "It was not what I expected.",
-    NOW
+    NOW,
+    notifier
   );
   if (!result.ok) throw new Error(result.error);
   return result.refundRequestId;
+}
+
+/** What the Platform Admin's decision sent, leaving out what raising it sent. */
+function decisionsSent() {
+  return notifier.triggers.filter(
+    (n) =>
+      n.kind === "refund-request-approved" || n.kind === "refund-request-declined"
+  );
 }
 
 function getSeat(seatId: number) {
@@ -161,10 +170,10 @@ function getSeat(seatId: number) {
 }
 
 describe("raising a Refund Request", () => {
-  it("lets the buyer raise one on an Individual Purchase inside the window", () => {
+  it("lets the buyer raise one on an Individual Purchase inside the window", async () => {
     const purchase = buyForSelf(base.user.id);
 
-    const result = raiseRefundRequest(db, purchase.id, base.user.id, "Nope.", NOW);
+    const result = await raiseRefundRequest(db, purchase.id, base.user.id, "Nope.", NOW, notifier);
 
     expect(result).toMatchObject({ ok: true, kind: "individual_purchase" });
   });
@@ -178,9 +187,9 @@ describe("raising a Refund Request", () => {
     );
   });
 
-  it("allows only one Open Refund Request per Purchase", () => {
+  it("allows only one Open Refund Request per Purchase", async () => {
     const purchase = buyForSelf(base.user.id);
-    raise(purchase.id, base.user.id);
+    await raise(purchase.id, base.user.id);
 
     expect(checkRefundRequest(db, purchase.id, base.user.id, NOW)).toMatchObject(
       { ok: false, status: 409 }
@@ -240,6 +249,132 @@ describe("raising a Refund Request", () => {
   });
 });
 
+describe("notifying when a Refund Request is raised", () => {
+  const buyerAsNotified = {
+    name: "Test User",
+    email: "test@example.com",
+    avatarUrl: null,
+  };
+
+  it("confirms to the buyer, from Cadence itself, naming the course and amount", async () => {
+    const purchase = buyForSelf(base.user.id);
+
+    const id = await raise(purchase.id, base.user.id);
+
+    expect(
+      notifier.triggers.find((n) => n.kind === "refund-request-confirmation")
+    ).toEqual({
+      kind: "refund-request-confirmation",
+      recipients: [{ id: base.user.id, ...buyerAsNotified }],
+      actor: null,
+      data: {
+        kind: "refund-request-confirmation",
+        refundRequestId: id,
+        courseId: base.course.id,
+        courseTitle: "Test Course",
+        courseSlug: "test-course",
+        purchaseId: purchase.id,
+        amount: 7900,
+      },
+      idempotencyKey: `refund-raised:${id}`,
+    });
+  });
+
+  it("sends an Open Refund Request to every Platform Admin, and to no one else, from the buyer", async () => {
+    const secondAdmin = db
+      .insert(schema.users)
+      .values({ name: "Sam Admin", email: "sam@example.com", role: UserRole.Admin })
+      .returning()
+      .get();
+    const purchase = buyForSelf(base.user.id);
+
+    const id = await raise(purchase.id, base.user.id);
+
+    const open = notifier.triggers.filter((n) => n.kind === "open-refund-request");
+    expect(open).toEqual([
+      {
+        kind: "open-refund-request",
+        recipients: [
+          { id: platformAdmin.id, name: "Pat Admin", email: "pat@example.com", avatarUrl: null },
+          { id: secondAdmin.id, name: "Sam Admin", email: "sam@example.com", avatarUrl: null },
+        ],
+        actor: { id: base.user.id, ...buyerAsNotified },
+        data: {
+          kind: "open-refund-request",
+          refundRequestId: id,
+          courseId: base.course.id,
+          courseTitle: "Test Course",
+          courseSlug: "test-course",
+          purchaseId: purchase.id,
+          amount: 7900,
+          reason: "It was not what I expected.",
+          buyerName: "Test User",
+        },
+        idempotencyKey: `refund-open:${id}`,
+      },
+    ]);
+  });
+
+  it("sends a Team Licence's confirmation to the Team Admin who bought it", async () => {
+    const priya = addLearner("Priya");
+    const { purchase } = buySeats(priya.id, 3);
+
+    await raise(purchase.id, priya.id);
+
+    expect(
+      notifier.triggers.find((n) => n.kind === "refund-request-confirmation")
+    ).toMatchObject({
+      recipients: [{ id: priya.id, name: "Priya" }],
+      data: { purchaseId: purchase.id, amount: 7900 * 3 },
+    });
+    expect(
+      notifier.triggers.find((n) => n.kind === "open-refund-request")
+    ).toMatchObject({ actor: { id: priya.id, name: "Priya" } });
+  });
+
+  it("sends nothing when the Refund Request can't be raised", async () => {
+    const purchase = buyForSelf(base.user.id, 20);
+
+    const result = await raiseRefundRequest(
+      db,
+      purchase.id,
+      base.user.id,
+      "Too late?",
+      NOW,
+      notifier
+    );
+
+    expect(result.ok).toBe(false);
+    expect(notifier.triggers).toEqual([]);
+  });
+
+  it("still raises the Refund Request and emails the buyer when sending fails", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const failing = createFakeNotifier();
+    failing.trigger = async () => {
+      throw new Error("Knock is down");
+    };
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await raiseRefundRequest(
+      db,
+      purchase.id,
+      base.user.id,
+      "Nope.",
+      NOW,
+      failing
+    );
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.email.subject).toBe("Refund requested — Test Course");
+    expect(listRefundRequestsForBuyer(db, base.user.id)).toMatchObject([
+      { id: result.refundRequestId, status: RefundStatus.Open },
+    ]);
+    expect(logError).toHaveBeenCalledTimes(2);
+    logError.mockRestore();
+  });
+});
+
 describe("the refund offer on the course page", () => {
   it("offers the newest Individual Purchase, not a newer Team Licence", () => {
     const individual = buyForSelf(base.user.id, 3);
@@ -253,7 +388,7 @@ describe("the refund offer on the course page", () => {
 
   it("offers nothing once the purchase has been refunded", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
     await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
     expect(getRefundOffer(db, base.user.id, base.course.id, NOW)).toBeNull();
@@ -270,7 +405,7 @@ describe("approving a Refund Request", () => {
         status: LessonProgressStatus.Completed,
       })
       .run();
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
     const result = await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
@@ -311,7 +446,7 @@ describe("approving a Refund Request", () => {
       })
       .returning()
       .get();
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
     await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
@@ -321,7 +456,7 @@ describe("approving a Refund Request", () => {
   it("makes a Team Licence's Unclaimed Seats unclaimable", async () => {
     const priya = addLearner("Priya");
     const { purchase, seats } = buySeats(priya.id, 2);
-    const id = raise(purchase.id, priya.id);
+    const id = await raise(purchase.id, priya.id);
 
     const result = await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
@@ -334,7 +469,7 @@ describe("approving a Refund Request", () => {
   it("refuses a Team Licence whose Seat was claimed after the request", async () => {
     const priya = addLearner("Priya");
     const { purchase, seats } = buySeats(priya.id, 2);
-    const id = raise(purchase.id, priya.id);
+    const id = await raise(purchase.id, priya.id);
     // Seats are on hold while Open, but older data can still hold a claim.
     claimSeat(seats[0].id, addLearner("Ben").id);
 
@@ -347,11 +482,11 @@ describe("approving a Refund Request", () => {
 
   it("lets the first decision win", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
     await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
     expect(
-      declineRefundRequest(db, id, platformAdmin.id, "Too late.", NOW)
+      await declineRefundRequest(db, id, platformAdmin.id, "Too late.", NOW, notifier)
     ).toMatchObject({
       ok: false,
       status: 409,
@@ -361,7 +496,7 @@ describe("approving a Refund Request", () => {
 
   it("emails the buyer that the refund is on its way", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
     const result = await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
@@ -375,7 +510,7 @@ describe("approving a Refund Request", () => {
 describe("notifying the buyer of an approval", () => {
   it("sends Refund Request approved to the buyer, from the Platform Admin", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
     await approveRefundRequest(
       db,
@@ -386,7 +521,7 @@ describe("notifying the buyer of an approval", () => {
       notifier
     );
 
-    expect(notifier.triggers).toEqual([
+    expect(decisionsSent()).toEqual([
       {
         kind: "refund-request-approved",
         recipients: [
@@ -420,12 +555,12 @@ describe("notifying the buyer of an approval", () => {
   it("sends a Team Licence's approval to the Team Admin who bought it", async () => {
     const priya = addLearner("Priya");
     const { purchase } = buySeats(priya.id, 3);
-    const id = raise(purchase.id, priya.id);
+    const id = await raise(purchase.id, priya.id);
 
     await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
-    expect(notifier.triggers).toHaveLength(1);
-    expect(notifier.triggers[0]).toMatchObject({
+    expect(decisionsSent()).toHaveLength(1);
+    expect(decisionsSent()[0]).toMatchObject({
       recipients: [{ id: priya.id, name: "Priya", email: "priya@example.com" }],
       data: { purchaseId: purchase.id, amount: 7900 * 3, decisionNote: null },
     });
@@ -433,7 +568,7 @@ describe("notifying the buyer of an approval", () => {
 
   it("still approves and emails the buyer when sending the Notification fails", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
     const failing = createFakeNotifier();
     failing.trigger = async () => {
       throw new Error("Knock is down");
@@ -459,36 +594,37 @@ describe("notifying the buyer of an approval", () => {
   it("sends nothing when the approval is refused", async () => {
     const priya = addLearner("Priya");
     const { purchase, seats } = buySeats(priya.id, 2);
-    const id = raise(purchase.id, priya.id);
+    const id = await raise(purchase.id, priya.id);
     claimSeat(seats[0].id, addLearner("Ben").id);
 
     await approveRefundRequest(db, id, platformAdmin.id, null, NOW, notifier);
 
-    expect(notifier.triggers).toEqual([]);
+    expect(decisionsSent()).toEqual([]);
   });
 });
 
 describe("declining a Refund Request", () => {
-  it("needs a note", () => {
+  it("needs a note", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
-    expect(declineRefundRequest(db, id, platformAdmin.id, "  ", NOW)).toMatchObject({
+    expect(await declineRefundRequest(db, id, platformAdmin.id, "  ", NOW, notifier)).toMatchObject({
       ok: false,
       status: 400,
     });
   });
 
-  it("keeps the buyer's Enrollment and lets them raise a new Refund Request", () => {
+  it("keeps the buyer's Enrollment and lets them raise a new Refund Request", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
 
-    const result = declineRefundRequest(
+    const result = await declineRefundRequest(
       db,
       id,
       platformAdmin.id,
       "You finished the course.",
-      NOW
+      NOW,
+      notifier
     );
 
     if (!result.ok) throw new Error(result.error);
@@ -497,22 +633,119 @@ describe("declining a Refund Request", () => {
     expect(checkRefundRequest(db, purchase.id, base.user.id, NOW).ok).toBe(true);
   });
 
-  it("frees a Team Licence's Seats again", () => {
+  it("frees a Team Licence's Seats again", async () => {
     const priya = addLearner("Priya");
     const { purchase, seats } = buySeats(priya.id, 1);
-    const id = raise(purchase.id, priya.id);
+    const id = await raise(purchase.id, priya.id);
     expect(getSeatAvailability(db, getSeat(seats[0].id))).toBe("on_hold");
 
-    declineRefundRequest(db, id, platformAdmin.id, "Seats are in use.", NOW);
+    await declineRefundRequest(db, id, platformAdmin.id, "Seats are in use.", NOW, notifier);
 
     expect(getSeatAvailability(db, getSeat(seats[0].id))).toBe("available");
   });
 });
 
-describe("listing Refund Requests", () => {
-  it("shows a Platform Admin live figures and the rules a request breaks", () => {
+describe("notifying the buyer of a decline", () => {
+  it("sends Refund Request declined to the buyer, from the Platform Admin, with the decision note", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
+    const id = await raise(purchase.id, base.user.id);
+
+    await declineRefundRequest(
+      db,
+      id,
+      platformAdmin.id,
+      "  You finished the course.  ",
+      NOW,
+      notifier
+    );
+
+    expect(decisionsSent()).toEqual([
+      {
+        kind: "refund-request-declined",
+        recipients: [
+          {
+            id: base.user.id,
+            name: "Test User",
+            email: "test@example.com",
+            avatarUrl: null,
+          },
+        ],
+        actor: {
+          id: platformAdmin.id,
+          name: "Pat Admin",
+          email: "pat@example.com",
+          avatarUrl: null,
+        },
+        data: {
+          kind: "refund-request-declined",
+          courseId: base.course.id,
+          courseTitle: "Test Course",
+          courseSlug: "test-course",
+          purchaseId: purchase.id,
+          amount: 7900,
+          decisionNote: "You finished the course.",
+        },
+        idempotencyKey: `refund-declined:${id}`,
+      },
+    ]);
+  });
+
+  it("sends a Team Licence's decline to the Team Admin who bought it", async () => {
+    const priya = addLearner("Priya");
+    const { purchase } = buySeats(priya.id, 2);
+    const id = await raise(purchase.id, priya.id);
+
+    await declineRefundRequest(db, id, platformAdmin.id, "Seats are in use.", NOW, notifier);
+
+    expect(decisionsSent()).toHaveLength(1);
+    expect(decisionsSent()[0]).toMatchObject({
+      kind: "refund-request-declined",
+      recipients: [{ id: priya.id, name: "Priya", email: "priya@example.com" }],
+      data: { purchaseId: purchase.id, decisionNote: "Seats are in use." },
+    });
+  });
+
+  it("still declines and emails the buyer when sending the Notification fails", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = await raise(purchase.id, base.user.id);
+    const failing = createFakeNotifier();
+    failing.trigger = async () => {
+      throw new Error("Knock is down");
+    };
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await declineRefundRequest(
+      db,
+      id,
+      platformAdmin.id,
+      "Past half way.",
+      NOW,
+      failing
+    );
+
+    if (!result.ok) throw new Error(result.error);
+    expect(result.email.subject).toBe("Refund declined — Test Course");
+    expect(listRefundRequestsForBuyer(db, base.user.id)).toMatchObject([
+      { id, status: RefundStatus.Declined },
+    ]);
+    expect(logError).toHaveBeenCalled();
+    logError.mockRestore();
+  });
+
+  it("sends nothing when the decline is refused for a missing note", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = await raise(purchase.id, base.user.id);
+
+    await declineRefundRequest(db, id, platformAdmin.id, "  ", NOW, notifier);
+
+    expect(decisionsSent()).toEqual([]);
+  });
+});
+
+describe("listing Refund Requests", () => {
+  it("shows a Platform Admin live figures and the rules a request breaks", async () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = await raise(purchase.id, base.user.id);
     // Since raising the request, the buyer has finished half the course.
     db.insert(schema.lessonProgress)
       .values(
@@ -540,10 +773,10 @@ describe("listing Refund Requests", () => {
     });
   });
 
-  it("shows a Team Licence's Seats instead of the buyer's progress", () => {
+  it("shows a Team Licence's Seats instead of the buyer's progress", async () => {
     const priya = addLearner("Priya");
     const { purchase } = buySeats(priya.id, 3);
-    raise(purchase.id, priya.id);
+    await raise(purchase.id, priya.id);
 
     const [row] = listRefundRequestsForReview(db, RefundStatus.Open, NOW);
 
@@ -558,13 +791,14 @@ describe("listing Refund Requests", () => {
     const first = buyForSelf(base.user.id);
     const ben = addLearner("Ben");
     const second = buyForSelf(ben.id);
-    const firstId = raise(first.id, base.user.id);
-    const secondId = raiseRefundRequest(
+    const firstId = await raise(first.id, base.user.id);
+    const secondId = await raiseRefundRequest(
       db,
       second.id,
       ben.id,
       "Changed my mind.",
-      new Date(NOW.getTime() + 60_000)
+      new Date(NOW.getTime() + 60_000),
+      notifier
     );
     if (!secondId.ok) throw new Error(secondId.error);
 
@@ -579,10 +813,10 @@ describe("listing Refund Requests", () => {
     ).toMatchObject([{ id: firstId, decidedByName: "Pat Admin" }]);
   });
 
-  it("shows a buyer their decided requests with the decline note", () => {
+  it("shows a buyer their decided requests with the decline note", async () => {
     const purchase = buyForSelf(base.user.id);
-    const id = raise(purchase.id, base.user.id);
-    declineRefundRequest(db, id, platformAdmin.id, "Past half way.", NOW);
+    const id = await raise(purchase.id, base.user.id);
+    await declineRefundRequest(db, id, platformAdmin.id, "Past half way.", NOW, notifier);
 
     expect(listRefundRequestsForBuyer(db, base.user.id)).toMatchObject([
       { id, status: RefundStatus.Declined, decisionNote: "Past half way." },
