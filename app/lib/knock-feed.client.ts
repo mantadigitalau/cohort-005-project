@@ -101,6 +101,8 @@ export function knockFeed(
     },
 
     async markAllRead() {
+      // The bulk channel update, so unloaded items are read too. Never the
+      // batch endpoint: `batch/*` with no message ids returns 422.
       await feed.markAllAsRead();
     },
 

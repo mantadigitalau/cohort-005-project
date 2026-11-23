@@ -81,6 +81,117 @@ export function emptyFeed(): NotificationFeedPort {
   };
 }
 
+// ─── The feed as the popover holds it ───
+// What the bell shows, built from pages, live updates and the user's own
+// reads. Pure, so the popover's rules live here rather than in a hook.
+
+export type FeedView = {
+  /** Newest first, one entry per Notification. */
+  notifications: FeedNotification[];
+  counts: FeedCounts;
+  /** Where the next older page starts. Null once history runs out. */
+  nextCursor: string | null;
+  /** True until the first page arrives, and while an older page loads. */
+  loading: boolean;
+};
+
+export type FeedEvent =
+  /** A different user: start over. */
+  | { type: "reset" }
+  | { type: "first-page"; page: FeedPage }
+  | { type: "loading-older" }
+  | { type: "older-page"; page: FeedPage }
+  | { type: "load-failed" }
+  | { type: "live"; update: FeedUpdate }
+  | { type: "read"; notificationId: string }
+  /** Every Notification, loaded or not. */
+  | { type: "all-read" }
+  /** Every Notification, loaded or not. Seen isn't read. */
+  | { type: "all-seen" };
+
+export const initialFeedView: FeedView = {
+  notifications: [],
+  counts: NO_COUNTS,
+  nextCursor: null,
+  loading: true,
+};
+
+/** Newest first, one entry per Notification; the incoming copy wins. */
+function merge(
+  current: FeedNotification[],
+  incoming: FeedNotification[]
+): FeedNotification[] {
+  const byId = new Map(current.map((n) => [n.id, n]));
+  for (const notification of incoming) byId.set(notification.id, notification);
+  return [...byId.values()].sort((a, b) =>
+    b.insertedAt.localeCompare(a.insertedAt)
+  );
+}
+
+export function feedReducer(view: FeedView, event: FeedEvent): FeedView {
+  switch (event.type) {
+    case "reset":
+      return initialFeedView;
+    case "first-page":
+      return {
+        notifications: merge([], event.page.notifications),
+        counts: event.page.counts,
+        nextCursor: event.page.nextCursor,
+        loading: false,
+      };
+    case "loading-older":
+      return { ...view, loading: true };
+    case "older-page":
+      return {
+        notifications: merge(view.notifications, event.page.notifications),
+        counts: event.page.counts,
+        nextCursor: event.page.nextCursor,
+        loading: false,
+      };
+    case "load-failed":
+      return { ...view, loading: false };
+    case "live":
+      return {
+        ...view,
+        notifications: merge(view.notifications, event.update.notifications),
+        counts: event.update.counts,
+      };
+    case "read": {
+      const target = view.notifications.find(
+        (n) => n.id === event.notificationId
+      );
+      if (!target || target.read) return view;
+      return {
+        ...view,
+        notifications: view.notifications.map((n) =>
+          n.id === event.notificationId ? { ...n, read: true } : n
+        ),
+        counts: {
+          ...view.counts,
+          unread: Math.max(0, view.counts.unread - 1),
+        },
+      };
+    }
+    case "all-read":
+      return {
+        ...view,
+        notifications: view.notifications.map((n) => ({ ...n, read: true })),
+        counts: { ...view.counts, unread: 0 },
+      };
+    case "all-seen":
+      return {
+        ...view,
+        notifications: view.notifications.map((n) => ({ ...n, seen: true })),
+        counts: { ...view.counts, unseen: 0 },
+      };
+  }
+}
+
+/** One request at a time, and only while history is left: no 429s. */
+export function canLoadOlder(view: FeedView): boolean {
+  return !view.loading && view.nextCursor !== null;
+}
+
 // ─── Drawing a row ───
 // A row's title, snippet, icon and link come from the Notification's `data`,
 // never from vendor templates. Each kind has its own entry below; a kind
