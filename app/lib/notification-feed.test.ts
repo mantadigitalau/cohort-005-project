@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   canLoadOlder,
+  canRefresh,
   describeNotification,
+  FEED_REFRESH_INTERVAL_MS,
+  parseNotificationData,
   feedReducer,
   initialFeedView,
   type FeedNotification,
@@ -292,18 +295,31 @@ describe("drawing a Discussion Reply row", () => {
 
 describe("drawing a row whose kind the feed doesn't know yet", () => {
   it("still draws a row with nowhere to go, rather than breaking the feed", () => {
-    expect(
-      describeNotification(
-        feedNotification({
-          kind: "not-a-real-kind" as FeedNotification["data"]["kind"],
-        })
-      )
-    ).toEqual({
+    const unreadable = { ...feedNotification(approved), data: null };
+    expect(describeNotification(unreadable)).toEqual({
       title: "New notification",
       snippet: "",
       category: null,
       href: null,
     });
+  });
+});
+
+describe("reading a Notification's data from the vendor", () => {
+  it("keeps the data of a kind the feed knows", () => {
+    expect(parseNotificationData(approved)).toEqual(approved);
+  });
+
+  it("can't read a kind the feed doesn't know yet", () => {
+    expect(parseNotificationData({ kind: "not-a-real-kind" })).toBeNull();
+  });
+
+  it("can't read data that isn't flat and scalar", () => {
+    expect(
+      parseNotificationData({ ...approved, courseTitle: { nested: true } })
+    ).toBeNull();
+    expect(parseNotificationData(null)).toBeNull();
+    expect(parseNotificationData("refund-request-approved")).toBeNull();
   });
 });
 
@@ -400,6 +416,94 @@ describe("a Notification arriving live", () => {
       update: { notifications: [newest], counts: { unseen: 2, unread: 3 } },
     });
     expect(view.notifications.map((n) => n.id)).toEqual(["msg_3", "msg_2"]);
+  });
+});
+
+describe("opening the feed again after Notifications were archived", () => {
+  function refreshed(view: FeedView, page: Parameters<typeof loaded>) {
+    const [notifications, nextCursor, counts] = page;
+    return feedReducer(feedReducer(view, { type: "refreshing" }), {
+      type: "refreshed",
+      page: { notifications, nextCursor, counts: counts ?? view.counts },
+    });
+  }
+
+  it("drops a row Knock no longer lists, and takes the page's cursor", () => {
+    const view = refreshed(loaded([newest, middle], "cursor_2"), [
+      [newest, oldest],
+      "cursor_9",
+    ]);
+    expect(view.notifications.map((n) => n.id)).toEqual(["msg_3", "msg_1"]);
+    expect(view.nextCursor).toBe("cursor_9");
+    expect(view.loading).toBe(false);
+  });
+
+  it("drops older pages too, so scrolling starts again from the first page", () => {
+    const scrolled = feedReducer(loaded([newest], "cursor_2"), {
+      type: "older-page",
+      page: {
+        notifications: [middle],
+        nextCursor: "cursor_3",
+        counts: { unseen: 2, unread: 3 },
+      },
+    });
+    const view = refreshed(scrolled, [[newest], "cursor_2"]);
+    expect(view.notifications.map((n) => n.id)).toEqual(["msg_3"]);
+    expect(view.nextCursor).toBe("cursor_2");
+  });
+
+  it("takes one off the unread count when the archived row was unread", () => {
+    const view = refreshed(
+      loaded([newest, middle], null, { unseen: 0, unread: 2 }),
+      [[newest], null, { unseen: 0, unread: 1 }]
+    );
+    expect(view.counts.unread).toBe(1);
+  });
+
+  it("keeps what the person read or saw while the page was loading", () => {
+    const before = feedReducer(
+      feedReducer(loaded([newest, middle], null), { type: "all-seen" }),
+      { type: "read", notificationId: "msg_3" }
+    );
+    // Knock hasn't caught up with the reads yet.
+    const view = refreshed(before, [
+      [newest, middle],
+      null,
+      { unseen: 2, unread: 3 },
+    ]);
+    expect(view.notifications.map((n) => [n.seen, n.read])).toEqual([
+      [true, true],
+      [true, false],
+    ]);
+    expect(view.counts).toEqual({ unseen: 0, unread: 2 });
+  });
+});
+
+describe("how often the feed is fetched again", () => {
+  const now = 1_000_000;
+
+  it("fetches again on opening once the interval has passed", () => {
+    expect(
+      canRefresh(loaded([newest], null), now - FEED_REFRESH_INTERVAL_MS, now)
+    ).toBe(true);
+  });
+
+  it("doesn't fetch again within the interval, so opening and closing can't flood Knock", () => {
+    expect(canRefresh(loaded([newest], null), now - 1000, now)).toBe(false);
+  });
+
+  it("doesn't fetch while a page is already loading", () => {
+    const view = feedReducer(loaded([newest], "cursor_2"), {
+      type: "loading-older",
+    });
+    expect(canRefresh(view, null, now)).toBe(false);
+  });
+
+  it("doesn't load older pages while it fetches again", () => {
+    const view = feedReducer(loaded([newest], "cursor_2"), {
+      type: "refreshing",
+    });
+    expect(canLoadOlder(view)).toBe(false);
   });
 });
 

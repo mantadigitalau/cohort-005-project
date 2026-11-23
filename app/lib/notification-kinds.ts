@@ -4,15 +4,18 @@
 // code.
 
 /** Every Notification in the catalogue. */
-export type NotificationKind =
-  | "refund-request-approved"
-  | "refund-request-declined"
-  | "refund-request-confirmation"
-  | "open-refund-request"
-  | "seat-claimed"
-  | "new-enrollment"
-  | "discussion-question"
-  | "discussion-reply";
+export const NOTIFICATION_KINDS = [
+  "refund-request-approved",
+  "refund-request-declined",
+  "refund-request-confirmation",
+  "open-refund-request",
+  "seat-claimed",
+  "new-enrollment",
+  "discussion-question",
+  "discussion-reply",
+] as const;
+
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
 /**
  * Everything the Notification Feed needs to draw a row. Kept flat and scalar
