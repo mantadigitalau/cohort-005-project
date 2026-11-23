@@ -7,7 +7,7 @@ import { Card, CardContent } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
 import { UserAvatar } from "~/components/user-avatar";
 import { cn, formatRelativeTime } from "~/lib/utils";
-import { MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { MAX_COMMENT_LENGTH, commentAnchorId } from "~/lib/comments";
 
 // Bodies arrive pre-rendered from the server (renderComment), because comments
 // are untrusted markdown and the sanitising renderer is server-only.
@@ -210,7 +210,7 @@ function CommentItem({
 
   if (comment.deleted) {
     return (
-      <div className="py-3">
+      <div id={commentAnchorId(comment.id)} className="scroll-mt-20 py-3">
         <p className="text-sm italic text-muted-foreground">
           This comment was deleted.
         </p>
@@ -225,7 +225,11 @@ function CommentItem({
   }
 
   return (
-    <div className={cn("py-3", isReply && "border-l pl-4")}>
+    // The id lets a Discussion Notification land on this comment.
+    <div
+      id={commentAnchorId(comment.id)}
+      className={cn("scroll-mt-20 py-3", isReply && "border-l pl-4")}
+    >
       <div className="flex items-start gap-3">
         <UserAvatar
           name={comment.author.name}

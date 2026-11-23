@@ -1,4 +1,5 @@
 import type { NotificationData, NotificationKind } from "~/lib/notification-kinds";
+import { commentAnchorId } from "~/lib/comments";
 import { formatPrice } from "~/lib/utils";
 
 // ─── Client feed port ───
@@ -109,7 +110,34 @@ function quoted(value: unknown): string | null {
   return note ? `“${note}”` : null;
 }
 
+function actorName(notification: FeedNotification): string {
+  return notification.actor?.name ?? "Someone";
+}
+
+/** The comment itself on its lesson page, not just the lesson. */
+function commentHref(data: NotificationData): string {
+  return `/courses/${text(data.courseSlug)}/lessons/${data.lessonId}#${commentAnchorId(
+    String(data.commentId)
+  )}`;
+}
+
 const ROWS: Partial<Record<NotificationKind, RowFor>> = {
+  "discussion-question": (notification) => ({
+    title: `${actorName(notification)} asked a question on ${text(
+      notification.data.lessonTitle
+    )}`,
+    snippet: text(notification.data.snippet),
+    category: "discussion",
+    href: commentHref(notification.data),
+  }),
+  "discussion-reply": (notification) => ({
+    title: `${actorName(notification)} replied to your question on ${text(
+      notification.data.lessonTitle
+    )}`,
+    snippet: text(notification.data.snippet),
+    category: "discussion",
+    href: commentHref(notification.data),
+  }),
   "refund-request-approved": ({ data }) => ({
     title: "Your Refund Request was approved",
     snippet: `${text(data.courseTitle)} · ${
