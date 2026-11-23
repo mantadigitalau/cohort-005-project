@@ -1,4 +1,7 @@
-import type { NotificationData, NotificationKind } from "~/lib/notification-kinds";
+import type {
+  NotificationData,
+  NotificationKind,
+} from "~/lib/notification-kinds";
 import { formatPrice } from "~/lib/utils";
 
 // ─── Client feed port ───
@@ -263,7 +266,28 @@ const ROWS: Partial<Record<NotificationKind, RowFor>> = {
     category: "refund",
     href: "/admin/refunds",
   }),
+  "new-enrollment": ({ data, actor }) => ({
+    title: `${actorName(actor)} enrolled`,
+    snippet: text(data.courseTitle),
+    category: "enrollment",
+    href: `/instructor/${Number(data.courseId)}/students`,
+  }),
+  "seat-claimed": ({ data, actor }) => ({
+    title: `${actorName(actor)} claimed a Seat`,
+    snippet: `${text(data.courseTitle)} · ${seatsLeft(Number(data.seatsLeft))}`,
+    category: "team",
+    href: "/team",
+  }),
 };
+
+function actorName(actor: FeedNotification["actor"]): string {
+  return actor?.name || "A Student";
+}
+
+function seatsLeft(count: number): string {
+  if (count === 0) return "No Seats left";
+  return count === 1 ? "1 Seat left" : `${count} Seats left`;
+}
 
 export function describeNotification(notification: FeedNotification): FeedRow {
   const rowFor = ROWS[notification.data.kind];

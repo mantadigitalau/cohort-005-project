@@ -35,6 +35,7 @@ import { UserAvatar } from "~/components/user-avatar";
 import { data } from "react-router";
 import { formatDuration, formatPrice } from "~/lib/utils";
 import { resolveCountry } from "~/lib/country.server";
+import { notifierFromEnv } from "~/lib/notifications.server";
 import { calculatePppPrice, getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { parseFormData, parseParams } from "~/lib/validation";
 
@@ -236,13 +237,14 @@ export async function action({ params, request }: Route.ActionArgs) {
     : course.price;
 
   if (parsed.data.intent === "confirm-purchase") {
-    const result = buyIndividualPurchase(
+    const result = await buyIndividualPurchase(
       db,
       currentUserId,
       course.id,
       pppPrice,
       country,
-      new Date()
+      new Date(),
+      notifierFromEnv()
     );
     if (!result.ok) {
       throw redirect(`/courses/${slug}`);
