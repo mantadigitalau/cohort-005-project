@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import { and, eq } from "drizzle-orm";
 import * as schema from "~/db/schema";
@@ -7,6 +7,7 @@ import {
   buyTeamLicence,
   isEnrolled,
 } from "./enrollment.server";
+import { createFakeNotifier, type FakeNotifier } from "./notifications.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -14,21 +15,24 @@ const NOW = new Date(2026, 9, 6, 12, 0, 0);
 
 let db: TestDb;
 let base: ReturnType<typeof seedBaseData>;
+let notifier: FakeNotifier;
 
 beforeEach(() => {
   db = createTestDb();
   base = seedBaseData(db);
+  notifier = createFakeNotifier();
 });
 
 describe("buyIndividualPurchase", () => {
-  it("records the Purchase and enrolls the buyer", () => {
-    const result = buyIndividualPurchase(
+  it("records the Purchase and enrolls the buyer", async () => {
+    const result = await buyIndividualPurchase(
       db,
       base.user.id,
       base.course.id,
       7900,
       "NL",
-      NOW
+      NOW,
+      notifier
     );
 
     expect(result.ok).toBe(true);
@@ -47,14 +51,15 @@ describe("buyIndividualPurchase", () => {
     expect(isEnrolled(db, base.user.id, base.course.id)).toBe(true);
   });
 
-  it("enrolls a Lapsed Student again", () => {
-    const first = buyIndividualPurchase(
+  it("enrolls a Lapsed Student again", async () => {
+    const first = await buyIndividualPurchase(
       db,
       base.user.id,
       base.course.id,
       7900,
       null,
-      NOW
+      NOW,
+      notifier
     );
     if (!first.ok) throw new Error("first purchase failed");
     // The Student loses their Enrollment (e.g. a refund) but keeps progress.
@@ -63,29 +68,39 @@ describe("buyIndividualPurchase", () => {
       .run();
     expect(isEnrolled(db, base.user.id, base.course.id)).toBe(false);
 
-    const again = buyIndividualPurchase(
+    const again = await buyIndividualPurchase(
       db,
       base.user.id,
       base.course.id,
       7900,
       null,
-      NOW
+      NOW,
+      notifier
     );
 
     expect(again.ok).toBe(true);
     expect(isEnrolled(db, base.user.id, base.course.id)).toBe(true);
   });
 
-  it("refuses a buyer who is already enrolled", () => {
-    buyIndividualPurchase(db, base.user.id, base.course.id, 7900, null, NOW);
-
-    const result = buyIndividualPurchase(
+  it("refuses a buyer who is already enrolled", async () => {
+    await buyIndividualPurchase(
       db,
       base.user.id,
       base.course.id,
       7900,
       null,
-      NOW
+      NOW,
+      notifier
+    );
+
+    const result = await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
     );
 
     expect(result).toEqual({ ok: false, reason: "already_enrolled" });
@@ -100,6 +115,121 @@ describe("buyIndividualPurchase", () => {
       )
       .all();
     expect(buyerPurchases).toHaveLength(1);
+  });
+});
+
+describe("the New Enrollment Notification", () => {
+  it("tells the Instructor when a Student makes an Individual Purchase", async () => {
+    const result = await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+    if (!result.ok) throw new Error("purchase failed");
+
+    expect(notifier.triggers).toEqual([
+      {
+        kind: "new-enrollment",
+        recipients: [expect.objectContaining({ id: base.instructor.id })],
+        actor: expect.objectContaining({
+          id: base.user.id,
+          name: base.user.name,
+        }),
+        data: {
+          kind: "new-enrollment",
+          courseId: base.course.id,
+          courseTitle: base.course.title,
+          courseSlug: base.course.slug,
+          enrollmentId: result.enrollment.id,
+        },
+        idempotencyKey: `enrollment:${result.enrollment.id}`,
+      },
+    ]);
+  });
+
+  it("tells the Instructor again when a Lapsed Student enrolls again", async () => {
+    const first = await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+    if (!first.ok) throw new Error("first purchase failed");
+    db.delete(schema.enrollments)
+      .where(eq(schema.enrollments.id, first.enrollment.id))
+      .run();
+
+    const again = await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+    if (!again.ok) throw new Error("second purchase failed");
+
+    expect(notifier.triggers.map((n) => n.idempotencyKey)).toEqual([
+      `enrollment:${first.enrollment.id}`,
+      `enrollment:${again.enrollment.id}`,
+    ]);
+    expect(notifier.triggers[1].recipients).toEqual([
+      expect.objectContaining({ id: base.instructor.id }),
+    ]);
+  });
+
+  it("isn't sent when the buyer is already enrolled", async () => {
+    await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+    await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      notifier
+    );
+
+    expect(notifier.triggers).toHaveLength(1);
+  });
+
+  it("never fails the purchase when sending throws", async () => {
+    const throwing = createFakeNotifier();
+    throwing.trigger = async () => {
+      throw new Error("Knock is down");
+    };
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await buyIndividualPurchase(
+      db,
+      base.user.id,
+      base.course.id,
+      7900,
+      null,
+      NOW,
+      throwing
+    );
+
+    expect(result.ok).toBe(true);
+    expect(isEnrolled(db, base.user.id, base.course.id)).toBe(true);
+    expect(logError).toHaveBeenCalled();
+    logError.mockRestore();
   });
 });
 

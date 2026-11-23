@@ -8,15 +8,23 @@ import {
   teamMembers,
   teams,
   TeamMemberRole,
+  users,
 } from "~/db/schema";
+import {
+  notifySafely,
+  type Notification,
+  type NotificationPort,
+  type NotificationUser,
+} from "~/lib/notifications.server";
 import type { Db } from "~/lib/refunds.server";
 
 // ─── Enrollment ───
 // Giving a Student an Enrollment, and the Purchases that lead to one (or, for a
 // Team Licence, to Seats instead). See GLOSSARY.md for the language.
 //
-// Every function takes the database first and the current time last, so tests
-// can hand in an in-memory database and a fixed clock. Uses positional
+// Every function takes the database first and the current time last (then the
+// Notification port, for those that send one), so tests can hand in an
+// in-memory database, a fixed clock and a fake notifier. Uses positional
 // parameters (project convention).
 
 type Enrollment = typeof enrollments.$inferSelect;
@@ -98,15 +106,19 @@ export type IndividualPurchaseResult =
   | { ok: true; purchase: Purchase; enrollment: Enrollment }
   | { ok: false; reason: "already_enrolled" };
 
-/** An Individual Purchase: the buyer pays and gets an Enrollment. */
-export function buyIndividualPurchase(
+/**
+ * An Individual Purchase: the buyer pays and gets an Enrollment, and the
+ * course's Instructor gets a New Enrollment Notification.
+ */
+export async function buyIndividualPurchase(
   db: Db,
   userId: number,
   courseId: number,
   amountPaid: number,
   country: string | null,
-  now: Date
-): IndividualPurchaseResult {
+  now: Date,
+  notifier: NotificationPort
+): Promise<IndividualPurchaseResult> {
   if (isEnrolled(db, userId, courseId)) {
     return { ok: false, reason: "already_enrolled" };
   }
@@ -120,7 +132,59 @@ export function buyIndividualPurchase(
     now
   );
   const enrollment = enrollUser(db, userId, courseId, now);
+  await notifyNewEnrollment(db, enrollment, notifier);
   return { ok: true, purchase, enrollment };
+}
+
+// ─── Notifications ───
+
+export function getNotificationUser(db: Db, userId: number): NotificationUser {
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) throw new Error(`User ${userId} not found.`);
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    avatarUrl: user.avatarUrl,
+  };
+}
+
+/**
+ * Tells the course's Instructor that a Student enrolled, by an Individual
+ * Purchase or a Claimed Seat. A failure never fails the enrolment.
+ */
+export async function notifyNewEnrollment(
+  db: Db,
+  enrollment: Enrollment,
+  notifier: NotificationPort
+): Promise<void> {
+  await notifySafely(notifier, () => newEnrollmentNotification(db, enrollment));
+}
+
+function newEnrollmentNotification(
+  db: Db,
+  enrollment: Enrollment
+): Notification {
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, enrollment.courseId))
+    .get();
+  if (!course) throw new Error(`Course ${enrollment.courseId} not found.`);
+
+  return {
+    kind: "new-enrollment",
+    recipients: [getNotificationUser(db, course.instructorId)],
+    actor: getNotificationUser(db, enrollment.userId),
+    data: {
+      kind: "new-enrollment",
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      enrollmentId: enrollment.id,
+    },
+    idempotencyKey: `enrollment:${enrollment.id}`,
+  };
 }
 
 function getTeamForAdmin(db: Db, userId: number): Team | undefined {

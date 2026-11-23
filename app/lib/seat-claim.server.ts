@@ -1,6 +1,16 @@
-import { eq } from "drizzle-orm";
-import { coupons, enrollments, purchases } from "~/db/schema";
-import { enrollUser, isEnrolled } from "~/lib/enrollment.server";
+import { and, eq, isNull } from "drizzle-orm";
+import { coupons, courses, enrollments, purchases } from "~/db/schema";
+import {
+  enrollUser,
+  getNotificationUser,
+  isEnrolled,
+  notifyNewEnrollment,
+} from "~/lib/enrollment.server";
+import {
+  notifySafely,
+  type Notification,
+  type NotificationPort,
+} from "~/lib/notifications.server";
 import { getSeatAvailability, type Db } from "~/lib/refunds.server";
 
 // ─── Seat claim ───
@@ -41,14 +51,19 @@ export function isCountryMismatch(
   return !!purchase?.country && purchase.country !== claimantCountry;
 }
 
-/** Claims the Seat with this code for a Student and enrolls them. */
-export function claimSeat(
+/**
+ * Claims the Seat with this code for a Student and enrolls them. The Team
+ * Admin who bought the Team Licence hears the Seat was claimed, and the
+ * course's Instructor gets a New Enrollment Notification.
+ */
+export async function claimSeat(
   db: Db,
   code: string,
   userId: number,
   userCountry: string,
-  now: Date
-): ClaimSeatResult {
+  now: Date,
+  notifier: NotificationPort
+): Promise<ClaimSeatResult> {
   const seat = getSeatByCode(db, code);
   if (!seat) {
     return { ok: false, error: "Coupon not found" };
@@ -85,5 +100,59 @@ export function claimSeat(
 
   const enrollment = enrollUser(db, userId, seat.courseId, now);
 
+  await notifySafely(notifier, () => seatClaimedNotification(db, seat, userId));
+  await notifyNewEnrollment(db, enrollment, notifier);
+
   return { ok: true, enrollment };
+}
+
+/**
+ * To the Team Admin who bought the Team Licence: who claimed the Seat, for
+ * which course, and how many of that Team Licence's Seats can still be claimed.
+ */
+function seatClaimedNotification(
+  db: Db,
+  seat: typeof coupons.$inferSelect,
+  claimantId: number
+): Notification {
+  const purchase = db
+    .select()
+    .from(purchases)
+    .where(eq(purchases.id, seat.purchaseId))
+    .get();
+  if (!purchase) throw new Error(`Purchase ${seat.purchaseId} not found.`);
+
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, seat.courseId))
+    .get();
+  if (!course) throw new Error(`Course ${seat.courseId} not found.`);
+
+  const seatsLeft = db
+    .select({ id: coupons.id })
+    .from(coupons)
+    .where(
+      and(
+        eq(coupons.purchaseId, seat.purchaseId),
+        isNull(coupons.redeemedAt),
+        isNull(coupons.refundedAt)
+      )
+    )
+    .all().length;
+
+  return {
+    kind: "seat-claimed",
+    recipients: [getNotificationUser(db, purchase.userId)],
+    actor: getNotificationUser(db, claimantId),
+    data: {
+      kind: "seat-claimed",
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      seatId: seat.id,
+      seatsLeft,
+    },
+    idempotencyKey: `seat-claimed:${seat.id}`,
+  };
 }
