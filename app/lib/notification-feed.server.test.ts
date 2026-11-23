@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { generateKeyPairSync, verify } from "node:crypto";
 import { notificationFeedSession } from "./notification-feed.server";
 
@@ -45,6 +45,19 @@ describe("the Notification Feed session handed to the browser", () => {
   it("is absent when any one of the feed keys is missing", async () => {
     const { KNOCK_FEED_CHANNEL_ID: _, ...withoutChannel } = keyedEnv;
     expect(await notificationFeedSession(7, withoutChannel)).toBeNull();
+  });
+
+  it("is absent, never thrown, when the token can't be signed, so the page still loads", async () => {
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const session = await notificationFeedSession(7, {
+      ...keyedEnv,
+      KNOCK_SIGNING_KEY: "not a key",
+    });
+
+    expect(session).toBeNull();
+    expect(logError).toHaveBeenCalled();
+    logError.mockRestore();
   });
 
   it("carries the public key, the feed channel and the session user's id", async () => {

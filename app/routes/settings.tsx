@@ -52,7 +52,8 @@ const PREFERENCE_LABELS: Record<
 > = {
   "refund-request-updates": {
     label: "Refund Request updates",
-    description: "When a Refund Request you raised is approved or declined.",
+    description:
+      "When a Refund Request you raised is received, approved or declined.",
   },
   "open-refund-requests": {
     label: "Open Refund Requests",
@@ -75,6 +76,8 @@ const PREFERENCE_LABELS: Record<
     description: "When someone replies to your comment.",
   },
 };
+
+const PREFERENCE_NOT_SAVED = "Your Notification setting could not be saved.";
 
 export function meta() {
   return [
@@ -150,10 +153,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (formData.get("intent") === "set-preference") {
     const preference = parseFormData(formData, setPreferenceSchema);
     if (!preference.success) {
-      return data(
-        { preferenceError: "That setting could not be saved." },
-        { status: 400 }
-      );
+      throw data("That setting could not be saved.", { status: 400 });
     }
     try {
       await notifierFromEnv().setPreference(
@@ -164,10 +164,7 @@ export async function action({ request }: Route.ActionArgs) {
       );
     } catch (error) {
       console.error("[notifications] saving a preference failed:", error);
-      return data(
-        { preferenceError: "Your Notification setting could not be saved." },
-        { status: 502 }
-      );
+      throw data(PREFERENCE_NOT_SAVED, { status: 502 });
     }
     return { preferenceSaved: true };
   }
@@ -182,6 +179,30 @@ export async function action({ request }: Route.ActionArgs) {
 
   await updateProfile(db, notifierFromEnv(), currentUser.id, name, bio || null);
   return { success: true };
+}
+
+/**
+ * The server action throws when a Notification switch can't be saved, like
+ * any action that can't continue. A switch is optimistic, though, so one
+ * failed save must not swap /settings for the ErrorBoundary: this catches
+ * that one failure and hands it to the switch, which falls back to the saved
+ * value and shows a toast. Every other submission passes straight through.
+ */
+export async function clientAction({
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
+  const formData = await request.clone().formData();
+  if (formData.get("intent") !== "set-preference") return serverAction();
+  try {
+    return await serverAction();
+  } catch (error) {
+    if (!isRouteErrorResponse(error)) throw error;
+    return {
+      preferenceError:
+        typeof error.data === "string" ? error.data : PREFERENCE_NOT_SAVED,
+    };
+  }
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
@@ -360,7 +381,7 @@ function PreferenceSwitchRow({
 }: {
   preferenceSwitch: PreferenceSwitch;
 }) {
-  const fetcher = useFetcher<typeof action>();
+  const fetcher = useFetcher<typeof clientAction>();
   const { category } = preferenceSwitch;
   const { label, description } = PREFERENCE_LABELS[category];
   const id = `preference-${category}`;
