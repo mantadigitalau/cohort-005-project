@@ -259,6 +259,22 @@ describe("Notifications from claiming a Seat", () => {
     ).toEqual([base.user.id]);
   });
 
+  it("doesn't tell the Team Admin when they claim a Seat themselves", async () => {
+    const [seat] = buySeats(1);
+
+    await claimSeat(db, seat.code, teamAdmin.id, "NL", NOW, notifier);
+
+    expect(notifier.triggers.map((n) => n.kind)).toEqual(["new-enrollment"]);
+  });
+
+  it("doesn't tell the Instructor when they claim a Seat on their own course", async () => {
+    const [seat] = buySeats(1);
+
+    await claimSeat(db, seat.code, base.instructor.id, "NL", NOW, notifier);
+
+    expect(notifier.triggers.map((n) => n.kind)).toEqual(["seat-claimed"]);
+  });
+
   it("sends nothing when the claim is refused", async () => {
     await claimSeat(db, "nope", base.user.id, "NL", NOW, notifier);
 

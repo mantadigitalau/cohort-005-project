@@ -2,7 +2,6 @@ import { and, eq, isNull } from "drizzle-orm";
 import { coupons, courses, enrollments, purchases } from "~/db/schema";
 import {
   enrollUser,
-  getNotificationUser,
   isEnrolled,
   notifyNewEnrollment,
 } from "~/lib/enrollment.server";
@@ -11,6 +10,7 @@ import {
   type Notification,
   type NotificationPort,
 } from "~/lib/notifications.server";
+import { loadNotificationUser } from "~/lib/notification-users.server";
 import { getSeatAvailability, type Db } from "~/lib/refunds.server";
 
 // ─── Seat claim ───
@@ -143,8 +143,8 @@ function seatClaimedNotification(
 
   return {
     kind: "seat-claimed",
-    recipients: [getNotificationUser(db, purchase.userId)],
-    actor: getNotificationUser(db, claimantId),
+    recipients: [loadNotificationUser(db, purchase.userId)],
+    actor: loadNotificationUser(db, claimantId),
     data: {
       kind: "seat-claimed",
       courseId: course.id,

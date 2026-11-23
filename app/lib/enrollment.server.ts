@@ -8,14 +8,13 @@ import {
   teamMembers,
   teams,
   TeamMemberRole,
-  users,
 } from "~/db/schema";
 import {
   notifySafely,
   type Notification,
   type NotificationPort,
-  type NotificationUser,
 } from "~/lib/notifications.server";
+import { loadNotificationUser } from "~/lib/notification-users.server";
 import type { Db } from "~/lib/refunds.server";
 
 // ─── Enrollment ───
@@ -138,17 +137,6 @@ export async function buyIndividualPurchase(
 
 // ─── Notifications ───
 
-export function getNotificationUser(db: Db, userId: number): NotificationUser {
-  const user = db.select().from(users).where(eq(users.id, userId)).get();
-  if (!user) throw new Error(`User ${userId} not found.`);
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    avatarUrl: user.avatarUrl,
-  };
-}
-
 /**
  * Tells the course's Instructor that a Student enrolled, by an Individual
  * Purchase or a Claimed Seat. A failure never fails the enrolment.
@@ -174,8 +162,8 @@ function newEnrollmentNotification(
 
   return {
     kind: "new-enrollment",
-    recipients: [getNotificationUser(db, course.instructorId)],
-    actor: getNotificationUser(db, enrollment.userId),
+    recipients: [loadNotificationUser(db, course.instructorId)],
+    actor: loadNotificationUser(db, enrollment.userId),
     data: {
       kind: "new-enrollment",
       courseId: course.id,

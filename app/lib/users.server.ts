@@ -5,8 +5,8 @@ import { UserRole, users } from "~/db/schema";
 import {
   syncUserSafely,
   type NotificationPort,
-  type NotificationUser,
 } from "~/lib/notifications.server";
+import { toNotificationUser } from "~/lib/notification-users.server";
 
 // ─── Users ───
 // Writing a user's profile. Every write that changes what a Notification shows
@@ -19,15 +19,6 @@ import {
 
 export type Db = BetterSQLite3Database<typeof schema>;
 type User = typeof users.$inferSelect;
-
-function toNotificationUser(user: User): NotificationUser {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    avatarUrl: user.avatarUrl,
-  };
-}
 
 /** Creates a Student account. */
 export async function signUp(
