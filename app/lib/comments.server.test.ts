@@ -349,7 +349,14 @@ describe("deleteComment", () => {
   it("lets the author soft-delete their own comment", async () => {
     const question = await ask(base.user.id);
 
-    const deleted = deleteComment(db, question.id, base.user.id, false, LATER);
+    const deleted = await deleteComment(
+      db,
+      question.id,
+      base.user.id,
+      false,
+      LATER,
+      notifier
+    );
 
     expect(deleted).toMatchObject({
       id: question.id,
@@ -361,12 +368,13 @@ describe("deleteComment", () => {
   it("lets staff soft-delete someone else's comment", async () => {
     const question = await ask(base.user.id);
 
-    const deleted = deleteComment(
+    const deleted = await deleteComment(
       db,
       question.id,
       base.instructor.id,
       true,
-      LATER
+      LATER,
+      notifier
     );
 
     expect(deleted.deletedAt).toBe(LATER.toISOString());
@@ -375,24 +383,94 @@ describe("deleteComment", () => {
   it("refuses someone who is neither the author nor staff", async () => {
     const question = await ask(base.user.id);
 
-    expect(() =>
-      deleteComment(db, question.id, base.instructor.id, false, LATER)
-    ).toThrow("You can only delete your own comments");
+    await expect(
+      deleteComment(db, question.id, base.instructor.id, false, LATER, notifier)
+    ).rejects.toThrow("You can only delete your own comments");
   });
 
   it("keeps the first deletion time when deleted again", async () => {
     const question = await ask(base.user.id);
-    deleteComment(db, question.id, base.user.id, false, NOW);
+    await deleteComment(db, question.id, base.user.id, false, NOW, notifier);
 
-    const again = deleteComment(db, question.id, base.user.id, false, LATER);
+    const again = await deleteComment(
+      db,
+      question.id,
+      base.user.id,
+      false,
+      LATER,
+      notifier
+    );
 
     expect(again.deletedAt).toBe(NOW.toISOString());
   });
 
   it("refuses a comment that doesn't exist", async () => {
-    expect(() => deleteComment(db, 9999, base.user.id, true, LATER)).toThrow(
-      "Comment not found"
+    await expect(
+      deleteComment(db, 9999, base.user.id, true, LATER, notifier)
+    ).rejects.toThrow("Comment not found");
+  });
+
+  it("archives the Notifications a deleted Question caused", async () => {
+    const question = await ask(base.user.id);
+
+    await deleteComment(db, question.id, base.user.id, false, LATER, notifier);
+
+    expect(notifier.archivedComments).toEqual([question.id]);
+  });
+
+  it("archives the Notifications a deleted Reply caused", async () => {
+    const question = await ask(base.user.id);
+    const reply = await createComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      question.id,
+      "Think of a backpack.",
+      NOW,
+      notifier
     );
+
+    await deleteComment(db, reply.id, base.instructor.id, false, LATER, notifier);
+
+    expect(notifier.archivedComments).toEqual([reply.id]);
+  });
+
+  it("leaves the Notifications of a deleted Question's Replies alone", async () => {
+    const question = await ask(base.user.id);
+    const reply = await createComment(
+      db,
+      base.instructor.id,
+      lessonId,
+      question.id,
+      "Think of a backpack.",
+      NOW,
+      notifier
+    );
+
+    await deleteComment(db, question.id, base.user.id, false, LATER, notifier);
+
+    expect(notifier.archivedComments).not.toContain(reply.id);
+  });
+
+  it("still deletes the comment when archiving its Notifications fails", async () => {
+    const question = await ask(base.user.id);
+    notifier.archiveByComment = async () => {
+      throw new Error("Knock is down");
+    };
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const deleted = await deleteComment(
+      db,
+      question.id,
+      base.user.id,
+      false,
+      LATER,
+      notifier
+    );
+
+    expect(deleted.deletedAt).toBe(LATER.toISOString());
+    expect(logError).toHaveBeenCalled();
+    logError.mockRestore();
   });
 });
 
@@ -426,7 +504,7 @@ describe("updateComment", () => {
 
   it("refuses a deleted comment", async () => {
     const question = await ask(base.user.id);
-    deleteComment(db, question.id, base.user.id, false, NOW);
+    await deleteComment(db, question.id, base.user.id, false, NOW, notifier);
 
     expect(() =>
       updateComment(db, question.id, base.user.id, "Edited", LATER)

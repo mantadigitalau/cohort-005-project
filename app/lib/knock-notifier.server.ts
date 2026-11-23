@@ -140,14 +140,13 @@ function withChannel(
   };
 }
 
-function notYet(method: string): never {
-  throw new Error(`Knock adapter: ${method} is not implemented yet.`);
-}
-
 /** The parts of the Knock SDK Cadence uses; tests hand in a stand-in. */
 export type KnockClient = {
   workflows: Pick<Knock["workflows"], "trigger">;
   users: Pick<Knock["users"], "update" | "getPreferences" | "setPreferences">;
+  messages: Pick<Knock["messages"], "list"> & {
+    batch: Pick<Knock["messages"]["batch"], "archive">;
+  };
 };
 
 export function knockNotifier(
@@ -186,8 +185,18 @@ export function knockNotifier(
         { idempotencyKey: notification.idempotencyKey }
       );
     },
-    async archiveByComment() {
-      notYet("archiveByComment");
+    async archiveByComment(commentId) {
+      // Every Notification a comment causes carries its id in `data`, so
+      // Knock's trigger_data filter finds them. Iterating walks every page.
+      const messageIds: string[] = [];
+      for await (const message of knock.messages.list({
+        trigger_data: JSON.stringify({ commentId }),
+      })) {
+        messageIds.push(message.id);
+      }
+      // Knock answers a batch with no message ids with a 422.
+      if (messageIds.length === 0) return;
+      await knock.messages.batch.archive({ message_ids: messageIds });
     },
     async syncUser(user) {
       const { id, ...profile } = toKnockUser(user);

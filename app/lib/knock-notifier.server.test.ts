@@ -3,9 +3,11 @@ import { NotFoundError } from "@knocklabs/node";
 import { knockNotifier, type KnockClient } from "./knock-notifier.server";
 
 // A stand-in for the Knock SDK, so these tests never contact Knock. It holds
-// one preference set per user, like Knock's "default" set.
+// one preference set per user, like Knock's "default" set, and a list of
+// sent messages with the data each was triggered with.
 function createStubKnock(
-  preferenceSets: Record<string, Record<string, unknown>> = {}
+  preferenceSets: Record<string, Record<string, unknown>> = {},
+  sentMessages: { id: string; data: Record<string, unknown> }[] = []
 ) {
   const identified: { id: string; body: Record<string, unknown> }[] = [];
   const preferenceWrites: { id: string; body: Record<string, unknown> }[] = [];
@@ -29,12 +31,43 @@ function createStubKnock(
     },
   };
 
+  const messageQueries: Record<string, unknown>[] = [];
+  const archived: string[][] = [];
+
+  const messages = {
+    // Knock's list returns a page you can iterate for every item. Like
+    // Knock, it matches trigger_data against each message's data.
+    list(query: { trigger_data?: string }) {
+      messageQueries.push(query);
+      const wanted = JSON.parse(query.trigger_data ?? "{}");
+      const matching = sentMessages.filter((message) =>
+        Object.entries(wanted).every(
+          ([key, value]) => message.data[key] === value
+        )
+      );
+      return (async function* () {
+        yield* matching;
+      })();
+    },
+    batch: {
+      async archive(body: { message_ids: string[] }) {
+        // Knock answers an empty batch with a 422.
+        if (body.message_ids.length === 0) {
+          throw new Error("422: message_ids must not be empty");
+        }
+        archived.push(body.message_ids);
+        return [];
+      },
+    },
+  };
+
   const client = {
     users,
+    messages,
     workflows: { async trigger() {} },
   } as unknown as KnockClient;
 
-  return { client, identified, preferenceWrites };
+  return { client, identified, preferenceWrites, messageQueries, archived };
 }
 
 const MAYA = {
@@ -188,5 +221,32 @@ describe("reading preferences from Knock", () => {
     const knock = createStubKnock();
 
     expect(await knockNotifier(knock.client).getPreferences(12)).toEqual({});
+  });
+});
+
+describe("archiving a comment's Notifications in Knock", () => {
+  it("archives every message triggered with that comment id, and no others", async () => {
+    const knock = createStubKnock({}, [
+      { id: "msg-question", data: { kind: "discussion-question", commentId: 7 } },
+      { id: "msg-reply", data: { kind: "discussion-reply", commentId: 8 } },
+      { id: "msg-refund", data: { kind: "refund-request-approved" } },
+    ]);
+
+    await knockNotifier(knock.client).archiveByComment(7);
+
+    expect(knock.messageQueries).toEqual([
+      { trigger_data: JSON.stringify({ commentId: 7 }) },
+    ]);
+    expect(knock.archived).toEqual([["msg-question"]]);
+  });
+
+  it("sends no archive request when the comment caused no messages", async () => {
+    const knock = createStubKnock({}, [
+      { id: "msg-reply", data: { kind: "discussion-reply", commentId: 8 } },
+    ]);
+
+    await knockNotifier(knock.client).archiveByComment(7);
+
+    expect(knock.archived).toEqual([]);
   });
 });
