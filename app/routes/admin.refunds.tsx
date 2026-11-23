@@ -117,12 +117,13 @@ export async function action({ request }: Route.ActionArgs) {
           new Date(),
           notifierFromEnv()
         )
-      : declineRefundRequest(
+      : await declineRefundRequest(
           db,
           refundRequestId,
           platformAdmin.id,
           note,
-          new Date()
+          new Date(),
+          notifierFromEnv()
         );
 
   if (!result.ok) {
