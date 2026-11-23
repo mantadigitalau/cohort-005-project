@@ -123,6 +123,22 @@ export async function notifySafely(
   }
 }
 
+/**
+ * Syncs a person to the Notification vendor after their row is written. Like
+ * notifySafely, a failure is logged and swallowed: a sync never fails signup
+ * or a profile edit.
+ */
+export async function syncUserSafely(
+  notifier: NotificationPort,
+  user: NotificationUser
+): Promise<void> {
+  try {
+    await notifier.syncUser(user);
+  } catch (error) {
+    console.error(`[notifications] syncing user ${user.id} failed:`, error);
+  }
+}
+
 // ─── No-op adapter ───
 
 export function loggingNotifier(

@@ -20,6 +20,7 @@
     "seed-wayfinder-issues": "bash scripts/seed-wayfinder-issues.sh",
     "db:migrate": "drizzle-kit migrate",
     "knock:workflows": "bash scripts/knock-workflows-wizard.sh",
+    "knock:sync-users": "tsx scripts/sync-users-to-knock.ts",
     "loc": "git ls-files | grep -vE '(lock|.db|_snapshot.json)' | xargs wc -l"
   },
   "dependencies": {
