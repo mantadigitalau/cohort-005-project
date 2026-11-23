@@ -1,4 +1,8 @@
 import { knockNotifier } from "~/lib/knock-notifier.server";
+import type {
+  NotificationData,
+  NotificationKind,
+} from "~/lib/notification-kinds";
 
 // ─── Notifications ───
 // The server Notification port: how Cadence sends Notifications, in Cadence's
@@ -9,16 +13,7 @@ import { knockNotifier } from "~/lib/knock-notifier.server";
 // Mirrors the mailer: Knock when KNOCK_SECRET_API_KEY is set, otherwise a
 // no-op adapter that only logs, so the app runs without Knock keys.
 
-/** Every Notification in the catalogue. */
-export type NotificationKind =
-  | "refund-request-approved"
-  | "refund-request-declined"
-  | "refund-request-confirmation"
-  | "open-refund-request"
-  | "seat-claimed"
-  | "new-enrollment"
-  | "discussion-question"
-  | "discussion-reply";
+export type { NotificationKind, NotificationData };
 
 /** What a person can mute. Several Notification kinds can share one. */
 export type PreferenceCategory =
@@ -50,15 +45,6 @@ export type NotificationUser = {
   email: string;
   avatarUrl: string | null;
 };
-
-/**
- * Everything the Notification Feed needs to draw a row. Kept flat and scalar
- * so the vendor can filter on it (e.g. archiving by comment id).
- */
-export type NotificationData = { kind: NotificationKind } & Record<
-  string,
-  string | number | boolean | null
->;
 
 export type Notification = {
   kind: NotificationKind;
